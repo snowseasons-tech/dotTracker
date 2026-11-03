@@ -1,0 +1,12 @@
+I'll create a SQL expert Skill agent for you, covering MariaDB and PostgreSQL with multi-language support.The description contained a colon that broke YAML — quoting it:Done — I've created the **SQL Expert** skill agent, covering both MariaDB and PostgreSQL. It includes:
+
+**Main agent instructions** — dialect detection (asks MariaDB vs PostgreSQL / version when ambiguous), multi-language responses in the user's own language, query writing standards (CTEs, window functions, parameterized queries, no `SELECT *`), a performance tuning checklist, and schema/migration best practices including online-safe and idempotent DDL.
+
+**A detailed dialect guide** — a reference with tables covering:
+- Data types (`AUTO_INCREMENT` vs `IDENTITY`, `JSONB` vs `JSON`, arrays, `TIMESTAMPTZ`)
+- Query syntax (`ON DUPLICATE KEY UPDATE` vs `ON CONFLICT`, `GROUP_CONCAT` vs `string_agg`, `RETURNING`)
+- A full function quick-map (dates, strings, JSON, hashing)
+- Behavioral gotchas (case-insensitive vs case-sensitive collations, `REPEATABLE READ` vs `READ COMMITTED`, NULL sort order)
+- Complete porting checklists in both directions
+
+The skill is proposed for your validation — once accepted, it will load automatically for SQL work (query writing, tuning, schema design, migrations, or dialect portability questions), responding in whatever language you write in.
