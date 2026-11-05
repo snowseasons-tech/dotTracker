@@ -1,0 +1,30 @@
+version: 1
+name: end-to-end-app-delivery
+coordinator:
+  host: alienware
+  responsibilities: [intake, contracts, integration, release_gate]
+workers:
+  backend:
+    host: beelink2
+    owns: [api, auth, database, migrations, ingestion]
+  ui:
+    host: wsl2
+    owns: [screens, accessibility, client_integration]
+  verification:
+    host: rog_laptop
+    owns: [test_plan, independent_review, security_findings]
+phases:
+  - intake
+  - design_contract
+  - parallel_implementation
+  - handoff_integration
+  - independent_verification
+  - release_gate
+  - staging
+  - production_rollout
+policy:
+  implementation_workers_use_isolated_worktrees: true
+  only_coordinator_changes_shared_contracts: true
+  report_unavailable_checks_as_not_run: true
+  critical_or_high_findings_block_release: true
+  deployment_requires_release_decision: true
