@@ -19,3 +19,25 @@ CREATE TABLE IF NOT EXISTS invites (id BIGSERIAL PRIMARY KEY, org_id BIGINT NOT 
 CREATE TABLE IF NOT EXISTS user_sessions (session_hash TEXT PRIMARY KEY, user_id BIGINT NOT NULL, org_id BIGINT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), expires_at TIMESTAMPTZ NOT NULL, FOREIGN KEY(user_id,org_id) REFERENCES users(id,org_id) ON DELETE CASCADE);
 CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT now());
 INSERT INTO schema_migrations(version) VALUES('0002-hardened-mvp') ON CONFLICT DO NOTHING;
+CREATE TABLE IF NOT EXISTS dispatch_routes (
+    asset_id BIGINT PRIMARY KEY,
+    org_id BIGINT NOT NULL,
+    revision BIGINT NOT NULL DEFAULT 1,
+    plan JSONB NOT NULL,
+    FOREIGN KEY (asset_id, org_id) REFERENCES assets(id, org_id) ON DELETE CASCADE
+);
+INSERT INTO schema_migrations(version) VALUES('0003-dispatch-routes') ON CONFLICT DO NOTHING;
+CREATE TABLE IF NOT EXISTS dispatch_progress (
+    asset_id BIGINT NOT NULL REFERENCES dispatch_routes(asset_id) ON DELETE CASCADE,
+    job_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'completed', 'skipped')),
+    changed_at TIMESTAMPTZ NOT NULL,
+    mutation_id UUID NOT NULL,
+    PRIMARY KEY (asset_id, job_id)
+);
+CREATE TABLE IF NOT EXISTS dispatch_mutations (
+    asset_id BIGINT NOT NULL REFERENCES dispatch_routes(asset_id) ON DELETE CASCADE,
+    mutation_id UUID NOT NULL,
+    PRIMARY KEY (asset_id, mutation_id)
+);
+INSERT INTO schema_migrations(version) VALUES('0004-dispatch-progress') ON CONFLICT DO NOTHING;

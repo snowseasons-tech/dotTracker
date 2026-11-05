@@ -114,3 +114,35 @@ GitHub Actions also runs PostgreSQL/PostGIS API integration tests against the pr
 ## Run integration tests with Docker
 
 Run `bash scripts/test_with_docker.sh` from this directory. The runner starts a temporary PostGIS database without publishing ports, upgrades the prior MVP schema, runs pytest, and removes the test containers and volumes on exit.
+
+## Sort a crew route
+
+Dispatch admins can call `POST /api/routes/optimize` with a job list and a directed road travel-time matrix. Row and column 0 represent the starting point. The remaining rows and columns follow job order. Use `null` for a blocked or prohibited leg. All times are whole minutes from the same reference point, such as local midnight on the service date.
+
+```json
+{
+  "departure_minute": 480,
+  "crew_equipment": ["chipper"],
+  "jobs": [
+    {"id": "job-a", "earliest_start": 540, "latest_finish": 660, "service_minutes": 30, "equipment": ["chipper"]},
+    {"id": "job-b", "earliest_start": 480, "latest_finish": 540, "service_minutes": 20}
+  ],
+  "travel_minutes": [[0, 30, 10], [null, 0, 20], [null, 15, 0]]
+}
+```
+
+The response lists arrival, service start, and finish times in stop order. It minimizes driving minutes and uses earliest completion to break ties. It handles one crew and up to eight required stops, ending at the last job. An infeasible itinerary returns HTTP 409.
+
+For a closure, call `POST /api/routes/reroute` with the same format, using the current crew location as the matrix origin, a current departure time, and only unfinished jobs. Supply updated travel times or mark unavailable legs `null`. The caller must obtain the matrix from a road routing source configured for the vehicle's height, weight, and restrictions. These endpoints calculate an itinerary without storing or dispatching it.
+
+### Publish and sync a route
+
+Use the same route request body with `PUT /api/assets/{asset_id}/dispatch-route` to save and publish a plan as a dispatcher. The browser's **Dispatch** tab shows the saved stop order for the selected crew asset. The organization-scoped `route_updated` WebSocket event includes the asset ID and revision. After reconnecting, the browser waits for the socket's `sync_ready` acknowledgement and fetches the latest saved plan. This also lets clients recover a plan published while they were disconnected. Existing databases require migration `0003-dispatch-routes` before using Dispatch.
+
+The live event hub runs in the API process. Keep the existing single-worker deployment for live updates until a shared event transport is configured. Native background push registration and delivery require a mobile client and push provider configuration.
+
+### Update job status offline
+
+Open the Dispatch tab while connected and select the crew asset to cache its stop list. In that tab, change a job to pending, completed, or skipped. The browser writes a UUID and UTC timestamp to the IndexedDB outbox before confirming the local change. The status count shows queued changes. The selected route replays changes oldest first after reconnect or when the tab resumes. Each request includes its UUID in the `Idempotency-Key` header. The browser removes only the acknowledged entry. A failed upload stops replay and keeps the remaining entries for retry.
+
+Apply migration `0004-dispatch-progress` before using status sync. The API deduplicates mutation UUIDs and resolves competing status updates by UTC timestamp, using the UUID to break ties. Use a stable job ID per asset when publishing replacement routes so progress follows the same job. This browser implementation caches the selected itinerary and progress. It requires an already loaded dashboard for offline use.

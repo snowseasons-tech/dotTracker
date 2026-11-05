@@ -1,14 +1,14 @@
 import * as maplibregl from 'https://unpkg.com/maplibre-gl@6.16.0/dist/maplibre-gl.mjs';
 const API='/api';let token=localStorage.getItem('dt_token'),refreshToken=localStorage.getItem('dt_refresh'),refreshPromise=null,user=null,map=null,assets=[],observations=[],selectedAsset=null,view='assets',assetsVisible=true,obsVisible=true,pendingPoint=null,observationCapturedAt=null,markers=new Map(),obsMarkers=[],ws=null;
 const $=s=>document.querySelector(s);function authHeaders(){return {'Authorization':'Bearer '+token,'Content-Type':'application/json'}}async function renewSession(){if(refreshPromise)return refreshPromise;refreshPromise=(async()=>{let r=await fetch(API+'/auth/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:refreshToken})});if(!r.ok)throw Error('Session expired');let d=await r.json();token=d.access_token;refreshToken=d.refresh_token;localStorage.setItem('dt_token',token);localStorage.setItem('dt_refresh',refreshToken)})().finally(()=>{refreshPromise=null});return refreshPromise}async function api(path,opts={},retried=false){let r=await fetch(API+path,{...opts,headers:{...authHeaders(),...(opts.headers||{})}});if(r.status===401){if(!retried&&refreshToken&&!path.includes('/auth/')){try{await renewSession();return api(path,opts,true)}catch{}}logout();throw Error('Session expired')}if(!r.ok){let e=await r.json().catch(()=>({detail:'Request failed'}));throw Error(e.detail||'Request failed')}return r.status===204?null:r.json()}
-function toast(msg){let t=$('#toast');t.textContent=msg;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}function setLogin(on){$('#login').style.display=on?'grid':'none'}function logout(){clearTrip();setPinMode(false);closeModal();let oldRefresh=refreshToken;if(oldRefresh)fetch(API+'/auth/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:oldRefresh})}).catch(()=>{});localStorage.removeItem('dt_token');localStorage.removeItem('dt_refresh');token=null;refreshToken=null;user=null;setLogin(true);stopLive();clearInterval(assetPoll);clearInterval(observationPoll)}
+function toast(msg){let t=$('#toast');t.textContent=msg;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}function setLogin(on){$('#login').style.display=on?'grid':'none'}function logout(){clearTrip();setPinMode(false);closeModal();let oldRefresh=refreshToken;if(oldRefresh)fetch(API+'/auth/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:oldRefresh})}).catch(()=>{});localStorage.removeItem('dt_token');localStorage.removeItem('dt_refresh');token=null;refreshToken=null;user=null;view='assets';$('#items').replaceChildren();document.querySelectorAll('.tab').forEach(tab=>tab.classList.toggle('active',tab.dataset.view===view));setLogin(true);stopLive();clearInterval(assetPoll);clearInterval(observationPoll)}
 async function signIn(){try{let data=await fetch(API+'/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('#email').value,password:$('#password').value})}).then(async r=>{let d=await r.json();if(!r.ok)throw Error(d.detail||'Sign in failed');return d});token=data.access_token;refreshToken=data.refresh_token;localStorage.setItem('dt_token',token);localStorage.setItem('dt_refresh',refreshToken);start()}catch(e){$('#loginError').textContent=e.message}}
 $('#loginBtn').onclick=signIn;$('#password').onkeydown=e=>{if(e.key==='Enter')signIn()};$('#seedBtn').onclick=async()=>{try{let x=await fetch(API+'/dev/seed',{method:'POST'}).then(r=>r.json());toast(x.message||'Demo workspace initialized');await signIn()}catch(e){$('#loginError').textContent='Could not initialize demo workspace'}};$('#signout').onclick=logout;
 function initMap(){if(map)return;map=new maplibregl.Map({container:'map',style:'https://tiles.openfreemap.org/styles/dark',center:[-104.99,39.739],zoom:11});map.addControl(new maplibregl.NavigationControl(),'top-right');map.on('load',()=>{refreshAssets();refreshObs()});map.on('contextmenu', e => openObservation([e.lngLat.lng, e.lngLat.lat]));map.on('click', e => {if(pinMode)openObservation([e.lngLat.lng, e.lngLat.lat])})}
 function makeMarker(asset){let el=document.createElement('div');el.style.cssText='width:17px;height:17px;border-radius:50%;border:3px solid #eef7fb;box-shadow:0 0 0 5px #59d8bc44;cursor:pointer;background:#55dab9';let m=new maplibregl.Marker({element:el}).setLngLat([asset.lng,asset.lat]).setPopup(new maplibregl.Popup({offset:16}).setHTML(`<b>${esc(asset.name)}</b><br><span>${asset.status} · ${asset.speed||0} km/h</span>`)).addTo(map);el.onclick=()=>{selectedAsset=asset.id;renderSidebar()};return m}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 async function refreshAssets(){try{assets=await api('/assets');renderSidebar();for(let a of assets){if(a.lat==null)continue;let marker=markers.get(a.id);if(marker)marker.setLngLat([a.lng,a.lat]);else markers.set(a.id,makeMarker(a));let el=markers.get(a.id).getElement();let color=a.status==='moving'?'#55dab9':a.status==='stopped'?'#f2b95d':'#718394';el.style.background=color;el.style.boxShadow=`0 0 0 5px ${color}44`;if(!assetsVisible)el.style.display='none'} $('#mapStatus').textContent=`${assets.length} assets · updated ${new Date().toLocaleTimeString()}`}catch(e){}}
-function renderSidebar(){let counts={moving:0,stopped:0,offline:0};assets.forEach(a=>counts[a.status]++);$('#movingCount').textContent=counts.moving;$('#stoppedCount').textContent=counts.stopped;$('#offlineCount').textContent=counts.offline;let root=$('#items');if(view==='history'&&root.querySelector('#tripForm'))return;if(view==='assets'){let q=$('#search').value.toLowerCase();let list=assets.filter(a=>a.name.toLowerCase().includes(q));root.innerHTML=list.map(a=>`<div class="asset ${a.id===selectedAsset?'sel':''}" data-id="${a.id}"><i class="assetdot ${a.status}"></i><div class="assetinfo"><div class="assetname">${esc(a.name)}</div><div class="assetmeta">${esc(a.kind)} · ${a.recorded_at?new Date(a.recorded_at).toLocaleTimeString():'No GPS fix'}</div></div><span class="speed">${a.speed?Math.round(a.speed)+' km/h':''}</span></div>`).join('')||'<div class="empty">No assets match your search.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{selectedAsset=+el.dataset.id;let a=assets.find(x=>x.id===selectedAsset);if(a?.lat)map.flyTo({center:[a.lng,a.lat],zoom:14});renderSidebar()});return}if(view==='observations'){root.innerHTML=observations.map(o=>`<div class="asset" data-id="${o.id}"><i class="assetdot" style="background:#70a7ff"></i><div class="assetinfo"><div class="assetname">${esc(o.note||'Observation pin')}</div><div class="assetmeta">${esc(o.author)} · ${new Date(o.observed_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No observations yet. Right-click the map to add one.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{let o=observations.find(x=>x.id==el.dataset.id);map.flyTo({center:[o.lng,o.lat],zoom:15})});return}if(view==='alerts'){api('/alerts').then(rows=>{if(view!=='alerts')return;root.innerHTML=rows.map(a=>`<div class="asset"><i class="assetdot" style="background:#f2b95d"></i><div class="assetinfo"><div class="assetname">${esc(a.message)}</div><div class="assetmeta">${new Date(a.created_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No alerts. Geofence events will appear here.</div>'});return}root.innerHTML='<div class="empty">Select an asset to browse up to 30 days of trip history.</div>'}
+function renderSidebar(){let counts={moving:0,stopped:0,offline:0};assets.forEach(a=>counts[a.status]++);$('#movingCount').textContent=counts.moving;$('#stoppedCount').textContent=counts.stopped;$('#offlineCount').textContent=counts.offline;let root=$('#items');if(view==='dispatch'){renderDispatch(root);return}if(view==='history'&&root.querySelector('#tripForm'))return;if(view==='assets'){let q=$('#search').value.toLowerCase();let list=assets.filter(a=>a.name.toLowerCase().includes(q));root.innerHTML=list.map(a=>`<div class="asset ${a.id===selectedAsset?'sel':''}" data-id="${a.id}"><i class="assetdot ${a.status}"></i><div class="assetinfo"><div class="assetname">${esc(a.name)}</div><div class="assetmeta">${esc(a.kind)} · ${a.recorded_at?new Date(a.recorded_at).toLocaleTimeString():'No GPS fix'}</div></div><span class="speed">${a.speed?Math.round(a.speed)+' km/h':''}</span></div>`).join('')||'<div class="empty">No assets match your search.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{selectedAsset=+el.dataset.id;let a=assets.find(x=>x.id===selectedAsset);if(a?.lat)map.flyTo({center:[a.lng,a.lat],zoom:14});renderSidebar()});return}if(view==='observations'){root.innerHTML=observations.map(o=>`<div class="asset" data-id="${o.id}"><i class="assetdot" style="background:#70a7ff"></i><div class="assetinfo"><div class="assetname">${esc(o.note||'Observation pin')}</div><div class="assetmeta">${esc(o.author)} · ${new Date(o.observed_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No observations yet. Right-click the map to add one.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{let o=observations.find(x=>x.id==el.dataset.id);map.flyTo({center:[o.lng,o.lat],zoom:15})});return}if(view==='alerts'){api('/alerts').then(rows=>{if(view!=='alerts')return;root.innerHTML=rows.map(a=>`<div class="asset"><i class="assetdot" style="background:#f2b95d"></i><div class="assetinfo"><div class="assetname">${esc(a.message)}</div><div class="assetmeta">${new Date(a.created_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No alerts. Geofence events will appear here.</div>'});return}root.innerHTML='<div class="empty">Select an asset to browse up to 30 days of trip history.</div>'}
 function pendingObservationQueue(){try{let value=JSON.parse(localStorage.getItem('dt_pending_observations')||'[]');if(!Array.isArray(value))return [];return value.filter(o=>o&&typeof o.client_id==='string'&&typeof o.note==='string'&&Number.isFinite(o.lat)&&o.lat>=-90&&o.lat<=90&&Number.isFinite(o.lng)&&o.lng>=-180&&o.lng<=180&&Number.isInteger(o.user_id)&&Number.isInteger(o.org_id)).slice(0,1000)}catch{return []}}
 function savePendingObservationQueue(queue){localStorage.setItem('dt_pending_observations',JSON.stringify(queue))}
 async function refreshObs(){try{observations=await api('/observations')}catch{}const queued=pendingObservationQueue().filter(o=>user&&o.user_id===user.id&&o.org_id===user.org_id).map(o=>({...o,id:`pending-${o.client_id}`,author:'You · waiting to sync',pending:true}));observations=[...observations,...queued];obsMarkers.forEach(m=>m.remove());obsMarkers=[];for(let o of observations){let el=document.createElement('div');el.style.cssText=`width:14px;height:14px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);background:${o.pending?'#e8bf68':'#70a7ff'};border:2px solid white;box-shadow:0 2px 8px #0008;cursor:pointer`;let html=`<div class="obs-popup"><b>${esc(o.note||'Observation')}</b><br>${esc(o.author||'You')}${o.pending?'<br>Waiting for connection':''}<br>${new Date(o.observed_at).toLocaleString()}</div>`;let m=new maplibregl.Marker({element:el}).setLngLat([o.lng,o.lat]).setPopup(new maplibregl.Popup({offset:12}).setHTML(html)).addTo(map);if(!obsVisible)el.style.display='none';obsMarkers.push(m)}if(view==='observations')renderSidebar()}
@@ -174,6 +174,163 @@ $('#historyBtn').onclick = openTripHistory;
 $('#geoBtn').onclick=async()=>{try{let fences=await api('/geofences');if(!fences.length){toast('No geofences yet. Add a circle from the quick form.');showGeofenceForm();return}let f=fences[0],g=f.geometry;if(f.shape==='circle')map.flyTo({center:[g.lng,g.lat],zoom:14});else map.flyTo({center:g.coordinates[0],zoom:13});toast(`${fences.length} geofence${fences.length===1?'':'s'} configured`)}catch(e){toast(e.message)}};
 function showGeofenceForm(){if(user?.role!=='admin'){toast('Only admins can create geofences');return}$('#modalTitle').textContent='Create a geofence';$('#modalSub').textContent='Create a circle around the current map center.';$('#modalFields').innerHTML=`<label class="field">Name<input id="geoName" value="New geofence"></label><div class="row"><label class="field">Radius (meters)<input id="geoRadius" type="number" value="400" min="20"></label><label class="field">Center<input id="geoCenter" disabled value="Map center"></label></div>`;$('#modalback').style.display='grid';$('#modalSave').onclick=async()=>{try{let p=map.getCenter();await api('/geofences',{method:'POST',body:JSON.stringify({name:$('#geoName').value,shape:'circle',geometry:{lat:p.lat,lng:p.lng,radius_m:+$('#geoRadius').value}})});$('#modalSave').onclick=saveObservation;closeModal();toast('Geofence created')}catch(e){toast(e.message)}}}const saveObservation=$('#modalSave').onclick;
 $('#addAsset').onclick=()=>{if(user?.role!=='admin'){toast('Only admins can add assets');return}$('#modalTitle').textContent='Add an asset';$('#modalSub').textContent='Create an asset record in this organization.';$('#modalFields').innerHTML=`<label class="field">Asset name<input id="assetName" placeholder="e.g. Service truck 04"></label><label class="field">Type<select id="assetKind"><option>vehicle</option><option>trailer</option><option>equipment</option></select></label><label class="field">Tracker ID (optional)<input id="deviceId" placeholder="Device serial number"></label>`;$('#modalback').style.display='grid';$('#modalSave').onclick=async()=>{try{let asset=await api('/assets',{method:'POST',body:JSON.stringify({name:$('#assetName').value,kind:$('#assetKind').value,device_id:$('#deviceId').value.trim()||null})});await refreshAssets();if(asset.device_token){$('#modalTitle').textContent='Save tracker credential';$('#modalSub').textContent='This secret is shown once. Copy it into the tracker configuration now.';$('#modalFields').innerHTML=`<label class="field">Device token<textarea id="issuedToken" readonly>${asset.device_token}</textarea></label><div style="font-size:11px;color:#ffcc7a">The token is stored as a hash. It cannot be recovered after you close this window.</div>`;$('#modalSave').textContent='Copy token and close';$('#modalSave').onclick=async()=>{try{await navigator.clipboard.writeText(asset.device_token)}catch{}closeModal();$('#modalSave').textContent='Save';$('#modalSave').onclick=saveObservation;toast('Asset added. Store its tracker token securely.')}}else{closeModal();$('#modalSave').onclick=saveObservation;toast('Asset added')}}catch(e){toast(e.message)}}};
+let dispatchDatabase;
+let dispatchSync;
+
+function openDispatchDatabase() {
+    dispatchDatabase ??= new Promise((resolve, reject) => {
+        const request = indexedDB.open('dottracker-dispatch', 1);
+        request.onupgradeneeded = () => request.result.createObjectStore('routes', {keyPath: 'key'});
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+    return dispatchDatabase;
+}
+
+async function changeCachedRoute(key, change) {
+    const db = await openDispatchDatabase();
+    return new Promise((resolve, reject) => {
+        const transaction = db.transaction('routes', change ? 'readwrite' : 'readonly');
+        const store = transaction.objectStore('routes');
+        const read = store.get(key);
+        let entry;
+        read.onsuccess = () => {
+            entry = read.result ?? {key, route: null, outbox: []};
+            if (change) {
+                change(entry);
+                store.put(entry);
+            }
+        };
+        transaction.oncomplete = () => resolve(entry);
+        transaction.onabort = () => reject(transaction.error);
+    });
+}
+
+function syncDispatch(asset) {
+    if (!navigator.onLine || !asset?.isConnected || !asset.value || !user) return;
+    if (dispatchSync) {
+        return dispatchSync.then(() => syncDispatch(asset));
+    }
+    const scope = user;
+    const assetId = asset.value;
+    const key = `${scope.org_id}:${scope.id}:${assetId}`;
+    const path = `/assets/${assetId}/dispatch-route`;
+    dispatchSync = (async () => {
+        const entry = await changeCachedRoute(key);
+        const mutations = [...entry.outbox].sort((a, b) => a.changed_at.localeCompare(b.changed_at));
+        for (const mutation of mutations) {
+            if (user !== scope || !navigator.onLine) return;
+            const receipt = await api(path + '/status', {
+                method: 'POST',
+                headers: {'Idempotency-Key': mutation.mutation_id},
+                body: JSON.stringify(mutation)
+            });
+            if (receipt?.synced !== true) throw Error('Status update was not acknowledged');
+            await changeCachedRoute(key, cached => {
+                cached.outbox = cached.outbox.filter(item => item.mutation_id !== mutation.mutation_id);
+            });
+        }
+    })().finally(() => { dispatchSync = null; });
+    return dispatchSync;
+}
+
+let dispatchRequest = 0;
+
+function renderDispatch(root) {
+    if (root.querySelector('#dispatchAsset') || !assets.length) {
+        if (!assets.length) root.innerHTML = '<div class="empty">No assets available for dispatch.</div>';
+        return;
+    }
+    root.innerHTML = `
+        <label class="field">Crew asset <select id="dispatchAsset">
+            <option value="">Choose an asset</option>
+            ${assets.map(asset => `<option value="${asset.id}">${esc(asset.name)}</option>`).join('')}
+        </select></label>
+        <p class="assetmeta" id="dispatchStatus" role="status"></p>
+        <ol id="dispatchStops"></ol>`;
+    const asset = $('#dispatchAsset');
+    asset.value = selectedAsset ?? '';
+    asset.onchange = () => refreshDispatch(asset, {upload:true});
+    refreshDispatch(asset, {upload:true});
+}
+
+async function refreshDispatch(asset, {upload = false} = {}) {
+    const request = ++dispatchRequest;
+    const status = $('#dispatchStatus');
+    const stops = $('#dispatchStops');
+    const scope = user;
+    const assetId = asset.value;
+    if (!assetId || !scope) {
+        stops.replaceChildren();
+        status.textContent = 'Choose an asset to see its assigned stops.';
+        return;
+    }
+    const key = `${scope.org_id}:${scope.id}:${assetId}`;
+    const isCurrent = () => request === dispatchRequest && asset.isConnected && user === scope;
+    const render = entry => {
+        if (!isCurrent()) return;
+        stops.replaceChildren();
+        if (!entry.route) {
+            status.textContent = 'No saved route for this asset.';
+            return;
+        }
+        status.textContent = `Route revision ${entry.route.revision} · ${entry.outbox.length} changes pending sync`;
+        const progress = new Map(Object.entries(entry.route.progress ?? {}));
+        for (const mutation of entry.outbox) progress.set(mutation.job_id, mutation.status);
+        for (const stop of entry.route.plan.stops) {
+            const item = document.createElement('li');
+            const label = document.createElement('label');
+            const select = document.createElement('select');
+            label.textContent = stop.job_id + ' ';
+            for (const value of ['pending', 'completed', 'skipped']) select.add(new Option(value, value));
+            select.value = progress.get(stop.job_id) ?? 'pending';
+            select.onchange = async () => {
+                select.disabled = true;
+                try {
+                    const mutation = {
+                        mutation_id: crypto.randomUUID(), job_id: stop.job_id,
+                        status: select.value, changed_at: new Date().toISOString()
+                    };
+                    const saved = await changeCachedRoute(key, cached => cached.outbox.push(mutation));
+                    render(saved);
+                    if (isCurrent()) refreshDispatch(asset, {upload:true});
+                } catch (error) {
+                    if (isCurrent()) {
+                        select.value = progress.get(stop.job_id) ?? 'pending';
+                        select.disabled = false;
+                        status.textContent = `Could not save change · ${error.message}`;
+                    }
+                }
+            };
+            label.append(select);
+            item.append(label);
+            stops.append(item);
+        }
+    };
+    try {
+        render(await changeCachedRoute(key));
+        if (!isCurrent() || !navigator.onLine) return;
+        if (upload) await syncDispatch(asset);
+        if (!isCurrent()) return;
+        const route = await api(`/assets/${assetId}/dispatch-route`);
+        if (!isCurrent()) return;
+        const saved = await changeCachedRoute(key, entry => {
+            if (!entry.route || route.revision >= entry.route.revision) entry.route = route;
+        });
+        render(saved);
+    } catch (error) {
+        if (isCurrent()) status.textContent = error.message;
+    }
+}
+
+function resumeDispatch() {
+    const asset = $('#dispatchAsset');
+    if (!document.hidden && view === 'dispatch' && asset?.value) refreshDispatch(asset, {upload:true});
+}
+
+document.addEventListener('visibilitychange', resumeDispatch);
+window.addEventListener('online', resumeDispatch);
+
 let heartbeat = null;
 let reconnectTimer = null;
 let liveGeneration = 0;
@@ -207,12 +364,22 @@ async function connectLive() {
         socket.onopen = () => {
             if (ws !== socket) return;
             $('.live span').textContent = 'Live connection';
+            socket.send('sync');
             heartbeat = setInterval(() => {
                 if (socket.readyState === WebSocket.OPEN) socket.send('ping');
             }, 20000);
         };
-        socket.onmessage = () => {
-            if (ws === socket) refreshAssets();
+        socket.onmessage = event => {
+            if (ws !== socket) return;
+            const message = JSON.parse(event.data);
+            if (message.type === 'position') refreshAssets();
+            if (message.type === 'sync_ready' || message.type === 'route_updated') {
+                const asset = $('#dispatchAsset');
+                if (!dispatchSync && view === 'dispatch' && asset?.value &&
+                    (message.type === 'sync_ready' || Number(asset.value) === message.asset_id)) {
+                    refreshDispatch(asset, {upload: message.type === 'sync_ready'});
+                }
+            }
         };
         socket.onclose = () => {
             if (ws !== socket) return;
