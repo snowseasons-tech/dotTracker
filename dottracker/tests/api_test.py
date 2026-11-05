@@ -274,3 +274,24 @@ def test_mobile_polygon_geofence_stores_postgis_geometry(client):
     bow_tie = [[-105.1, 39.7], [-105, 39.8], [-105, 39.7], [-105.1, 39.8]]
     assert client.post('/api/v1/geofences', headers=headers,
                        json={**payload, 'coordinates': bow_tie}).status_code == 422
+
+
+def test_safety_submission_replay_and_review(client):
+    from uuid import uuid4
+
+    headers = login(client)
+    template = client.get('/static/safety-v1.json').json()
+    submission = {'submission_id': str(uuid4()), 'template_version': template['version'],
+                  'completed_at': datetime.now(timezone.utc).isoformat(),
+                  'answers': dict.fromkeys(template['items'], 'checked'), 'notes': ''}
+    path = '/api/safety/submissions'
+    concern = {**submission, 'answers': {**submission['answers'], 'ppe': 'concern'}}
+    assert client.post(path, headers=headers, json=concern).status_code == 422
+    for _ in range(2):
+        assert client.post(path, headers=headers, json=submission).json() == {'synced': True}
+    history = client.get(path, headers=headers)
+    assert history.status_code == 200
+    rows = [row for row in history.json() if row['submission_id'] == submission['submission_id']]
+    assert len(rows) == 1
+    assert rows[0]['answers'] == submission['answers']
+    assert datetime.fromisoformat(rows[0]['completed_at']) == datetime.fromisoformat(submission['completed_at'])

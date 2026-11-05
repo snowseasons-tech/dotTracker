@@ -24,7 +24,7 @@ function initMap(){if(map)return;map=new maplibregl.Map({container:'map',style:'
 function makeMarker(asset){let el=document.createElement('div');el.style.cssText='width:17px;height:17px;border-radius:50%;border:3px solid #eef7fb;box-shadow:0 0 0 5px #59d8bc44;cursor:pointer;background:#55dab9';let m=new maplibregl.Marker({element:el}).setLngLat([asset.lng,asset.lat]).setPopup(new maplibregl.Popup({offset:16}).setHTML(`<b>${esc(asset.name)}</b><br><span>${asset.status} · ${asset.speed||0} km/h</span>`)).addTo(map);el.onclick=()=>{selectedAsset=asset.id;renderSidebar()};return m}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 async function refreshAssets(){try{assets=await api('/assets');renderSidebar();for(let a of assets){if(a.lat==null)continue;let marker=markers.get(a.id);if(marker)marker.setLngLat([a.lng,a.lat]);else markers.set(a.id,makeMarker(a));let el=markers.get(a.id).getElement();let color=a.status==='moving'?'#55dab9':a.status==='stopped'?'#f2b95d':'#718394';el.style.background=color;el.style.boxShadow=`0 0 0 5px ${color}44`;if(!assetsVisible)el.style.display='none'} $('#mapStatus').textContent=`${assets.length} assets · updated ${new Date().toLocaleTimeString()}`}catch(e){}}
-function renderSidebar(){let counts={moving:0,stopped:0,offline:0};assets.forEach(a=>counts[a.status]++);$('#movingCount').textContent=counts.moving;$('#stoppedCount').textContent=counts.stopped;$('#offlineCount').textContent=counts.offline;let root=$('#items');if(view==='dispatch'){renderDispatch(root);return}if(view==='history'&&root.querySelector('#tripForm'))return;if(view==='assets'){let q=$('#search').value.toLowerCase();let list=assets.filter(a=>a.name.toLowerCase().includes(q));root.innerHTML=list.map(a=>`<div class="asset ${a.id===selectedAsset?'sel':''}" data-id="${a.id}"><i class="assetdot ${a.status}"></i><div class="assetinfo"><div class="assetname">${esc(a.name)}</div><div class="assetmeta">${esc(a.kind)} · ${a.recorded_at?new Date(a.recorded_at).toLocaleTimeString():'No GPS fix'}</div></div><span class="speed">${a.speed?Math.round(a.speed)+' km/h':''}</span></div>`).join('')||'<div class="empty">No assets match your search.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{selectedAsset=+el.dataset.id;let a=assets.find(x=>x.id===selectedAsset);if(a?.lat)map.flyTo({center:[a.lng,a.lat],zoom:14});renderSidebar()});return}if(view==='observations'){root.innerHTML=observations.map(o=>`<div class="asset" data-id="${o.id}"><i class="assetdot" style="background:#70a7ff"></i><div class="assetinfo"><div class="assetname">${esc(o.note||(o.kind==='mobile_dot_checkpoint'?'Temporary inspection checkpoint':'Observation pin'))}</div><div class="assetmeta">${esc(o.author)} · ${new Date(o.observed_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No observations yet. Right-click the map to add one.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{let o=observations.find(x=>x.id==el.dataset.id);map.flyTo({center:[o.lng,o.lat],zoom:15})});return}if(view==='alerts'){api('/alerts').then(rows=>{if(view!=='alerts')return;root.innerHTML=rows.map(a=>`<div class="asset"><i class="assetdot" style="background:#f2b95d"></i><div class="assetinfo"><div class="assetname">${esc(a.message)}</div><div class="assetmeta">${new Date(a.created_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No alerts. Geofence events will appear here.</div>'});return}root.innerHTML='<div class="empty">Select an asset to browse up to 30 days of trip history.</div>'}
+function renderSidebar(){let counts={moving:0,stopped:0,offline:0};assets.forEach(a=>counts[a.status]++);$('#movingCount').textContent=counts.moving;$('#stoppedCount').textContent=counts.stopped;$('#offlineCount').textContent=counts.offline;let root=$('#items');if(view==='safety'){if(!root.querySelector('#safetyPanel'))renderSafety(root);return}if(view==='dispatch'){renderDispatch(root);return}if(view==='history'&&root.querySelector('#tripForm'))return;if(view==='assets'){let q=$('#search').value.toLowerCase();let list=assets.filter(a=>a.name.toLowerCase().includes(q));root.innerHTML=list.map(a=>`<div class="asset ${a.id===selectedAsset?'sel':''}" data-id="${a.id}"><i class="assetdot ${a.status}"></i><div class="assetinfo"><div class="assetname">${esc(a.name)}</div><div class="assetmeta">${esc(a.kind)} · ${a.recorded_at?new Date(a.recorded_at).toLocaleTimeString():'No GPS fix'}</div></div><span class="speed">${a.speed?Math.round(a.speed)+' km/h':''}</span></div>`).join('')||'<div class="empty">No assets match your search.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{selectedAsset=+el.dataset.id;let a=assets.find(x=>x.id===selectedAsset);if(a?.lat)map.flyTo({center:[a.lng,a.lat],zoom:14});renderSidebar()});return}if(view==='observations'){root.innerHTML=observations.map(o=>`<div class="asset" data-id="${o.id}"><i class="assetdot" style="background:#70a7ff"></i><div class="assetinfo"><div class="assetname">${esc(o.note||(o.kind==='mobile_dot_checkpoint'?'Temporary inspection checkpoint':'Observation pin'))}</div><div class="assetmeta">${esc(o.author)} · ${new Date(o.observed_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No observations yet. Right-click the map to add one.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{let o=observations.find(x=>x.id==el.dataset.id);map.flyTo({center:[o.lng,o.lat],zoom:15})});return}if(view==='alerts'){api('/alerts').then(rows=>{if(view!=='alerts')return;root.innerHTML=rows.map(a=>`<div class="asset"><i class="assetdot" style="background:#f2b95d"></i><div class="assetinfo"><div class="assetname">${esc(a.message)}</div><div class="assetmeta">${new Date(a.created_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No alerts. Geofence events will appear here.</div>'});return}root.innerHTML='<div class="empty">Select an asset to browse up to 30 days of trip history.</div>'}
 function pendingObservationQueue(){try{let value=JSON.parse(localStorage.getItem('dt_pending_observations')||'[]');if(!Array.isArray(value))return [];return value.filter(o=>o&&typeof o.client_id==='string'&&typeof o.note==='string'&&Number.isFinite(o.lat)&&o.lat>=-90&&o.lat<=90&&Number.isFinite(o.lng)&&o.lng>=-180&&o.lng<=180&&Number.isInteger(o.user_id)&&Number.isInteger(o.org_id)).slice(0,1000)}catch{return []}}
 function savePendingObservationQueue(queue){localStorage.setItem('dt_pending_observations',JSON.stringify(queue))}
 function initCheckpointLayer() {
@@ -333,7 +333,7 @@ function cancelFenceDrawing() {
 }
 
 function startFenceDrawing() {
-    if (!map?.isStyleLoaded()) {
+    if (!map?.getStyle()?.layers?.length) {
         toast('Wait for the map to finish loading.');
         return;
     }
@@ -376,13 +376,15 @@ function showGeofenceForm(shape) {
     $('#modalSub').textContent = polygon ? 'Give the drawn boundary a name.' : 'Use the current map center.';
     $('#modalFields').innerHTML = `
         <label class="field">Name <input id="geoName" maxlength="120" value="New geofence"></label>
-        ${polygon ? '' : '<label class="field">Radius (meters) <input id="geoRadius" type="number" value="400" min="20" max="100000"></label>'}`;
+        ${polygon ? '' : '<label class="field">Radius (meters) <input id="geoRadius" type="number" value="400" min="20" max="100000"></label>'}<p id="fenceSaveError" class="error" role="alert"></p>`;
     $('#modalback').style.display = 'grid';
     $('#geoName').focus();
     $('#modalSave').textContent = 'Save';
     $('#modalSave').onclick = async () => {
         const name = $('#geoName').value.trim();
-        if (!name) { toast('Enter a geofence name.'); return; }
+        const feedback = $('#fenceSaveError');
+        feedback.textContent = '';
+        if (!name) { feedback.textContent = 'Enter a geofence name.'; return; }
         const center = map.getCenter().wrap();
         const geometry = polygon ? {coordinates:fenceDraft} :
             {lat:center.lat, lng:center.lng, radius_m:$('#geoRadius').valueAsNumber};
@@ -394,7 +396,7 @@ function showGeofenceForm(shape) {
             closeModal();
             toast('Geofence created');
         } catch (error) {
-            toast(error.message);
+            feedback.textContent = error.message;
         } finally {
             save.disabled = false;
         }
@@ -488,6 +490,121 @@ function syncDispatch(asset) {
     })().finally(() => { dispatchSync = null; });
     return dispatchSync;
 }
+
+let safetySync = null;
+
+function syncSafety() {
+    if (safetySync || !user || !navigator.onLine) return safetySync;
+    const scope = user;
+    const key = `safety:${scope.org_id}:${scope.id}`;
+    safetySync = (async () => {
+        const entry = await changeCachedRoute(key);
+        for (const submission of entry.outbox) {
+            if (user !== scope || !navigator.onLine) break;
+            const receipt = await api('/safety/submissions', {method:'POST', body:JSON.stringify(submission)});
+            if (!receipt?.synced) throw Error('Submission was not acknowledged');
+            await changeCachedRoute(key, cached => {
+                cached.outbox = cached.outbox.filter(item => item.submission_id !== submission.submission_id);
+            });
+        }
+    })().finally(() => { safetySync = null; });
+    return safetySync;
+}
+
+async function renderSafety(root) {
+    const scope = user;
+    if (!scope) return;
+    const key = `safety:${scope.org_id}:${scope.id}`;
+    root.innerHTML = '<div id="safetyPanel"><p role="status">Loading checklist…</p></div>';
+    const panel = $('#safetyPanel');
+    try {
+        let entry = await changeCachedRoute(key);
+        if (!entry.template && navigator.onLine) {
+            const response = await fetch('/static/safety-v1.json');
+            if (!response.ok) throw Error('Could not load checklist');
+            const template = await response.json();
+            entry = await changeCachedRoute(key, cached => { cached.template = template; });
+        }
+        if (!panel.isConnected || user !== scope) return;
+        if (!entry.template) throw Error('Open Safety while online to cache the checklist');
+        const template = entry.template;
+        panel.innerHTML = `<form id="safetyForm">
+            <h3>${esc(template.title)}</h3>
+            ${Object.entries(template.items).map(([key,label]) => `<label class="field">${esc(label)}
+                <select required name="${esc(key)}"><option value="">Choose a result</option>
+                <option value="checked">Checked</option><option value="concern">Concern</option>
+                <option value="not_applicable">Not applicable</option></select></label>`).join('')}
+            <label class="field">Notes <textarea name="notes" maxlength="2000"></textarea></label>
+            <button class="btn primary" type="submit">Submit checklist</button></form>
+            <p id="safetyStatus" role="status"></p>
+            ${scope.role==='admin'?'<button class="btn" id="safetyReview">Review submissions</button><ol id="safetyHistory"></ol>':''}`;
+        const status = panel.querySelector('#safetyStatus');
+        const showPending = async () => {
+            const cached = await changeCachedRoute(key);
+            status.textContent = `${cached.outbox.length} checklists pending sync`;
+        };
+        const form = panel.querySelector('form');
+        form.onsubmit = async event => {
+            event.preventDefault();
+            const button = form.querySelector('button');
+            const {notes, ...answers} = Object.fromEntries(new FormData(form));
+            if (Object.values(answers).includes('concern') && !notes.trim()) {
+                status.textContent = 'Add a note for any concern.';
+                return;
+            }
+            button.disabled = true;
+            try {
+                const submission = {submission_id:crypto.randomUUID(), template_version:template.version,
+                    completed_at:new Date().toISOString(), answers, notes};
+                await changeCachedRoute(key, cached => cached.outbox.push(submission));
+                form.reset();
+                await showPending();
+                await syncSafety();
+                await showPending();
+            } catch (error) {
+                status.textContent = error.message;
+            } finally {
+                button.disabled = false;
+            }
+        };
+        const review = panel.querySelector('#safetyReview');
+        if (review) review.onclick = async () => {
+            try {
+                const rows = await api('/safety/submissions');
+                const history = panel.querySelector('#safetyHistory');
+                history.replaceChildren();
+                for (const row of rows) {
+                    const item = document.createElement('li');
+                    const answers = Object.entries(row.answers).map(([key,value]) =>
+                        `${template.items[key] ?? key}: ${value.replaceAll('_',' ')}`).join(' · ');
+                    item.textContent = `${row.author} · v${row.template_version} · ${new Date(row.completed_at).toLocaleString()} · ${answers} ${row.notes}`;
+                    history.append(item);
+                }
+                if (!rows.length) status.textContent = 'No submitted checklists yet.';
+            } catch (error) { status.textContent = error.message; }
+        };
+        await showPending();
+        await syncSafety();
+        await showPending();
+    } catch (error) {
+        if (panel.isConnected) panel.querySelector('[role=status]').textContent = error.message;
+    }
+}
+
+window.addEventListener('online', async () => {
+    const scope = user;
+    if (!scope) return;
+    const status = $('#safetyStatus');
+    try {
+        await syncSafety();
+        if (status?.isConnected && user === scope) {
+            const cached = await changeCachedRoute(`safety:${scope.org_id}:${scope.id}`);
+            status.textContent = `${cached.outbox.length} checklists pending sync`;
+        }
+    } catch (error) {
+        if (status?.isConnected && user === scope) status.textContent = error.message;
+    }
+});
 
 let dispatchRequest = 0;
 
@@ -656,4 +773,4 @@ async function connectLive() {
 
 let assetPoll = null;
 let observationPoll = null;
-async function start(){try{user=await api('/me');$('#userEmail').textContent=user.email;setLogin(false);initMap();await Promise.all([refreshAssets(),refreshObs()]);flushPendingObservations();connectLive();clearInterval(assetPoll);clearInterval(observationPoll);assetPoll=setInterval(refreshAssets,15000);observationPoll=setInterval(refreshObs,60000)}catch(e){setLogin(true)}}if(token)start();
+async function start(){try{user=await api('/me');$('#userEmail').textContent=user.email;setLogin(false);initMap();await Promise.all([refreshAssets(),refreshObs()]);flushPendingObservations();syncSafety()?.catch(()=>{});connectLive();clearInterval(assetPoll);clearInterval(observationPoll);assetPoll=setInterval(refreshAssets,15000);observationPoll=setInterval(refreshObs,60000)}catch(e){setLogin(true)}}if(token)start();
