@@ -2,13 +2,14 @@ import asyncio, hashlib, hmac, json, os, re, secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from uuid import UUID
 from urllib.parse import parse_qs, urlsplit
 
 import jwt
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Path as ApiPath, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -16,6 +17,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, VerificationError
 from pydantic import BaseModel, ConfigDict, Field
 from app.geometry import inside
+from app.routing import RoutePlan, RouteRequest, sort_route
 
 APP_ENV=os.getenv('APP_ENV','development').lower()
 IS_PRODUCTION=APP_ENV=='production'
@@ -266,6 +268,85 @@ def history(asset_id:int=ApiPath(gt=0),from_:Optional[datetime]=Query(None,alias
     rows=c.execute('SELECT id,lat,lng,speed,heading,recorded_at FROM positions WHERE org_id=%s AND asset_id=%s AND recorded_at BETWEEN %s AND %s ORDER BY recorded_at LIMIT 10000',(u['org_id'],asset_id,start,end)).fetchall()
     return rows
 
+@app.post('/api/routes/optimize')
+@app.post('/api/routes/reroute')
+def optimize_route(body: RouteRequest, dispatcher=Depends(admin)) -> RoutePlan:
+    return require_route_plan(body)
+
+
+def require_route_plan(body: RouteRequest) -> RoutePlan:
+    plan = sort_route(body)
+    if plan is None:
+        raise HTTPException(409, 'No route satisfies the equipment, travel and time-window constraints')
+    return plan
+
+
+@app.get('/api/assets/{asset_id}/dispatch-route')
+def get_dispatch_route(asset_id: int, c=Depends(db), u=Depends(current_user)):
+    route = c.execute("""SELECT revision, plan, COALESCE((
+        SELECT jsonb_object_agg(job_id, status) FROM dispatch_progress WHERE asset_id=dispatch_routes.asset_id
+        ), '{}'::jsonb) AS progress FROM dispatch_routes
+        WHERE asset_id=%s AND org_id=%s""", (asset_id, u['org_id'])).fetchone()
+    if route is None:
+        raise HTTPException(404, 'No dispatch route found')
+    return route
+
+
+class DispatchStatusMutation(BaseModel):
+    mutation_id: UUID
+    job_id: str = Field(min_length=1, max_length=80)
+    status: Literal['pending', 'completed', 'skipped']
+    changed_at: datetime
+
+
+@app.post('/api/assets/{asset_id}/dispatch-route/status')
+def update_dispatch_status(asset_id: int, body: DispatchStatusMutation, background_tasks: BackgroundTasks,
+                           idempotency_key: UUID = Header(alias='Idempotency-Key'),
+                           c=Depends(db), u=Depends(current_user)):
+    if idempotency_key != body.mutation_id:
+        raise HTTPException(422, 'Idempotency-Key must match mutation_id')
+    changed_at = require_aware(body.changed_at, 'changed_at')
+    if changed_at > datetime.now(timezone.utc) + timedelta(minutes=5):
+        raise HTTPException(422, 'Change timestamp is too far in the future')
+    route = c.execute("""SELECT revision, plan FROM dispatch_routes
+        WHERE asset_id=%s AND org_id=%s FOR UPDATE""", (asset_id, u['org_id'])).fetchone()
+    if route is None:
+        raise HTTPException(404, 'No dispatch route found')
+    accepted = c.execute("""INSERT INTO dispatch_mutations (asset_id, mutation_id) VALUES (%s, %s)
+        ON CONFLICT DO NOTHING RETURNING mutation_id""", (asset_id, body.mutation_id)).fetchone()
+    if not accepted:
+        return {'synced': True}
+    if not any(stop['job_id'] == body.job_id for stop in route['plan']['stops']):
+        raise HTTPException(409, 'Job is no longer on this route')
+    updated = c.execute("""INSERT INTO dispatch_progress (asset_id, job_id, status, changed_at, mutation_id)
+        VALUES (%s, %s, %s, %s, %s) ON CONFLICT (asset_id, job_id) DO UPDATE SET
+        status=excluded.status, changed_at=excluded.changed_at, mutation_id=excluded.mutation_id
+        WHERE (excluded.changed_at, excluded.mutation_id) >
+              (dispatch_progress.changed_at, dispatch_progress.mutation_id)
+        RETURNING job_id""", (asset_id, body.job_id, body.status, changed_at, body.mutation_id)).fetchone()
+    c.commit()
+    if updated:
+        background_tasks.add_task(hub.publish, u['org_id'],
+                                  {'type': 'route_updated', 'asset_id': asset_id, 'revision': route['revision']})
+    return {'synced': True}
+
+
+@app.put('/api/assets/{asset_id}/dispatch-route')
+def publish_dispatch_route(asset_id: int, body: RouteRequest, background_tasks: BackgroundTasks,
+                           c=Depends(db), u=Depends(admin)):
+    if not c.execute('SELECT 1 FROM assets WHERE id=%s AND org_id=%s FOR KEY SHARE',
+                     (asset_id, u['org_id'])).fetchone():
+        raise HTTPException(404, 'Asset not found')
+    plan = require_route_plan(body)
+    route = c.execute("""INSERT INTO dispatch_routes (asset_id, org_id, plan) VALUES (%s, %s, %s)
+        ON CONFLICT (asset_id) DO UPDATE SET plan=excluded.plan, revision=dispatch_routes.revision+1
+        RETURNING revision, plan""", (asset_id, u['org_id'], Jsonb(plan.model_dump()))).fetchone()
+    c.commit()
+    background_tasks.add_task(hub.publish, u['org_id'],
+                              {'type': 'route_updated', 'asset_id': asset_id, 'revision': route['revision']})
+    return route
+
+
 @app.get('/api/geofences')
 def geofences(c=Depends(db),u=Depends(current_user)):
     return c.execute('SELECT id,name,shape,geometry,enabled FROM geofences WHERE org_id=%s ORDER BY name',(u['org_id'],)).fetchall()
@@ -389,7 +470,9 @@ async def live(ws:WebSocket):
         await ws.close(code=4401);return
     await hub.send(ws,org)
     try:
-        while True: await ws.receive_text()
+        while True:
+            if await ws.receive_text() == 'sync':
+                await ws.send_json({'type': 'sync_ready'})
     except WebSocketDisconnect: hub.remove(ws,org)
 
 @app.post('/api/dev/seed')

@@ -60,6 +60,10 @@ def test_org_scope_and_viewer_permissions(client):
     cross_tenant_note = client.post('/api/observations', headers=viewer_headers,
                                     json={'lat': 39.7, 'lng': -105, 'asset_id': asset_a})
     assert cross_tenant_note.status_code == 404
+    route = {'jobs': [{'id': 'pruning'}], 'travel_minutes': [[0, 12], [None, 0]]}
+    assert client.put(f'/api/assets/{asset_a}/dispatch-route', headers=admin_headers, json=route).status_code == 200
+    assert client.get(f'/api/assets/{asset_a}/dispatch-route', headers=viewer_headers).status_code == 404
+    assert client.put(f'/api/assets/{asset_a}/dispatch-route', headers=viewer_headers, json=route).status_code == 403
     with psycopg.connect(os.environ['DATABASE_URL']) as conn:
         assert conn.execute('SELECT org_id FROM users WHERE email=%s', ('viewer-isolation@test.invalid',)).fetchone()[0] == org_b
 
@@ -161,3 +165,44 @@ def test_observation_retry_is_idempotent(client):
     second = client.post('/api/observations', headers=headers, json=record)
     assert first.status_code == second.status_code == 200
     assert first.json()['id'] == second.json()['id']
+
+
+def test_dispatch_route_updates_and_reconnect_catchup(client):
+    headers = login(client)
+    asset = client.post('/api/assets', headers=headers, json={'name': 'Dispatch Sync Test'})
+    assert asset.status_code == 200
+    asset_id = asset.json()['id']
+    path = f'/api/assets/{asset_id}/dispatch-route'
+    payload = {'jobs': [{'id': 'job-1'}], 'travel_minutes': [[0, 12], [None, 0]]}
+    ticket = client.post('/api/live-ticket', headers=headers).json()['ticket']
+    with client.websocket_connect('/api/live', subprotocols=['dottracker', f'ticket.{ticket}']) as socket:
+        socket.send_text('sync')
+        assert socket.receive_json() == {'type': 'sync_ready'}
+        assert client.put(path, headers=headers, json=payload).json()['revision'] == 1
+        assert socket.receive_json() == {'type': 'route_updated', 'asset_id': asset_id, 'revision': 1}
+    payload['travel_minutes'][0][1] = 20
+    assert client.put(path, headers=headers, json=payload).json()['revision'] == 2
+    saved = client.get(path, headers=headers)
+    assert saved.status_code == 200
+    assert saved.json()['revision'] == 2
+    assert saved.json()['plan']['driving_minutes'] == 20
+
+
+def test_dispatch_status_replay_and_timestamp_conflict(client):
+    headers = login(client)
+    asset = client.post('/api/assets', headers=headers, json={'name': 'Offline Dispatch Test'})
+    path = f"/api/assets/{asset.json()['id']}/dispatch-route"
+    payload = {'jobs': [{'id': 'job-1'}], 'travel_minutes': [[0, 12], [None, 0]]}
+    assert client.put(path, headers=headers, json=payload).status_code == 200
+    now = datetime.now(timezone.utc)
+    completed = {'mutation_id': 'fc5ddce8-91c6-472d-bda8-f5848225c173',
+                 'job_id': 'job-1', 'status': 'completed', 'changed_at': now.isoformat()}
+    stale = {**completed, 'mutation_id': 'a7320458-c410-4a92-88b2-5d84f3471cf7',
+             'status': 'skipped', 'changed_at': (now - timedelta(minutes=1)).isoformat()}
+    assert client.post(path + '/status', headers=headers, json=completed).status_code == 422
+    mismatch = {**headers, 'Idempotency-Key': stale['mutation_id']}
+    assert client.post(path + '/status', headers=mismatch, json=completed).status_code == 422
+    for mutation in (completed, completed, stale):
+        replay_headers = {**headers, 'Idempotency-Key': mutation['mutation_id']}
+        assert client.post(path + '/status', headers=replay_headers, json=mutation).status_code == 200
+    assert client.get(path, headers=headers).json()['progress'] == {'job-1': 'completed'}

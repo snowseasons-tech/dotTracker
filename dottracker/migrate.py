@@ -24,11 +24,13 @@ def main() -> None:
             raise SystemExit('Production MIGRATION_DATABASE_URL must set sslmode=require or verify-full exactly once')
 
     with psycopg.connect(database_url, row_factory=dict_row) as conn:
-        conn.execute('SELECT pg_advisory_lock(841257301)')
-        try:
-            _apply_next(conn)
-        finally:
-            conn.execute('SELECT pg_advisory_unlock(841257301)')
+        conn.execute('SELECT pg_advisory_xact_lock(841257301)')
+        _apply_next(conn)
+        for version in ('0003-dispatch-routes', '0004-dispatch-progress'):
+            if not conn.execute('SELECT 1 FROM schema_migrations WHERE version=%s', (version,)).fetchone():
+                conn.execute((ROOT / 'sql' / 'migrations' / f'{version}.sql').read_text())
+                conn.execute('INSERT INTO schema_migrations(version) VALUES(%s)', (version,))
+                print(f'Applied {version}')
 
 
 def _apply_next(conn) -> None:
