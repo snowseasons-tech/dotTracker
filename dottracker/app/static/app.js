@@ -1,7 +1,7 @@
 import * as maplibregl from 'https://unpkg.com/maplibre-gl@6.16.0/dist/maplibre-gl.mjs';
 const API='/api';let token=localStorage.getItem('dt_token'),refreshToken=localStorage.getItem('dt_refresh'),refreshPromise=null,user=null,map=null,assets=[],observations=[],selectedAsset=null,view='assets',assetsVisible=true,obsVisible=true,pendingPoint=null,observationCapturedAt=null,markers=new Map(),obsMarkers=[],ws=null;
 const $=s=>document.querySelector(s);function authHeaders(){return {'Authorization':'Bearer '+token,'Content-Type':'application/json'}}async function renewSession(){if(refreshPromise)return refreshPromise;refreshPromise=(async()=>{let r=await fetch(API+'/auth/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:refreshToken})});if(!r.ok)throw Error('Session expired');let d=await r.json();token=d.access_token;refreshToken=d.refresh_token;localStorage.setItem('dt_token',token);localStorage.setItem('dt_refresh',refreshToken)})().finally(()=>{refreshPromise=null});return refreshPromise}async function api(path,opts={},retried=false){let r=await fetch(API+path,{...opts,headers:{...authHeaders(),...(opts.headers||{})}});if(r.status===401){if(!retried&&refreshToken&&!path.includes('/auth/')){try{await renewSession();return api(path,opts,true)}catch{}}logout();throw Error('Session expired')}if(!r.ok){let e=await r.json().catch(()=>({detail:'Request failed'}));throw Error(e.detail||'Request failed')}return r.status===204?null:r.json()}
-function toast(msg){let t=$('#toast');t.textContent=msg;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}function setLogin(on){$('#login').style.display=on?'grid':'none'}function logout(){clearTrip();setPinMode(false);closeModal();let oldRefresh=refreshToken;if(oldRefresh)fetch(API+'/auth/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:oldRefresh})}).catch(()=>{});localStorage.removeItem('dt_token');localStorage.removeItem('dt_refresh');token=null;refreshToken=null;user=null;setLogin(true);if(ws)ws.close()}
+function toast(msg){let t=$('#toast');t.textContent=msg;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}function setLogin(on){$('#login').style.display=on?'grid':'none'}function logout(){clearTrip();setPinMode(false);closeModal();let oldRefresh=refreshToken;if(oldRefresh)fetch(API+'/auth/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:oldRefresh})}).catch(()=>{});localStorage.removeItem('dt_token');localStorage.removeItem('dt_refresh');token=null;refreshToken=null;user=null;setLogin(true);stopLive();clearInterval(assetPoll);clearInterval(observationPoll)}
 async function signIn(){try{let data=await fetch(API+'/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('#email').value,password:$('#password').value})}).then(async r=>{let d=await r.json();if(!r.ok)throw Error(d.detail||'Sign in failed');return d});token=data.access_token;refreshToken=data.refresh_token;localStorage.setItem('dt_token',token);localStorage.setItem('dt_refresh',refreshToken);start()}catch(e){$('#loginError').textContent=e.message}}
 $('#loginBtn').onclick=signIn;$('#password').onkeydown=e=>{if(e.key==='Enter')signIn()};$('#seedBtn').onclick=async()=>{try{let x=await fetch(API+'/dev/seed',{method:'POST'}).then(r=>r.json());toast(x.message||'Demo workspace initialized');await signIn()}catch(e){$('#loginError').textContent='Could not initialize demo workspace'}};$('#signout').onclick=logout;
 function initMap(){if(map)return;map=new maplibregl.Map({container:'map',style:'https://tiles.openfreemap.org/styles/dark',center:[-104.99,39.739],zoom:11});map.addControl(new maplibregl.NavigationControl(),'top-right');map.on('load',()=>{refreshAssets();refreshObs()});map.on('contextmenu', e => openObservation([e.lngLat.lng, e.lngLat.lat]));map.on('click', e => {if(pinMode)openObservation([e.lngLat.lng, e.lngLat.lat])})}
@@ -174,5 +174,57 @@ $('#historyBtn').onclick = openTripHistory;
 $('#geoBtn').onclick=async()=>{try{let fences=await api('/geofences');if(!fences.length){toast('No geofences yet. Add a circle from the quick form.');showGeofenceForm();return}let f=fences[0],g=f.geometry;if(f.shape==='circle')map.flyTo({center:[g.lng,g.lat],zoom:14});else map.flyTo({center:g.coordinates[0],zoom:13});toast(`${fences.length} geofence${fences.length===1?'':'s'} configured`)}catch(e){toast(e.message)}};
 function showGeofenceForm(){if(user?.role!=='admin'){toast('Only admins can create geofences');return}$('#modalTitle').textContent='Create a geofence';$('#modalSub').textContent='Create a circle around the current map center.';$('#modalFields').innerHTML=`<label class="field">Name<input id="geoName" value="New geofence"></label><div class="row"><label class="field">Radius (meters)<input id="geoRadius" type="number" value="400" min="20"></label><label class="field">Center<input id="geoCenter" disabled value="Map center"></label></div>`;$('#modalback').style.display='grid';$('#modalSave').onclick=async()=>{try{let p=map.getCenter();await api('/geofences',{method:'POST',body:JSON.stringify({name:$('#geoName').value,shape:'circle',geometry:{lat:p.lat,lng:p.lng,radius_m:+$('#geoRadius').value}})});$('#modalSave').onclick=saveObservation;closeModal();toast('Geofence created')}catch(e){toast(e.message)}}}const saveObservation=$('#modalSave').onclick;
 $('#addAsset').onclick=()=>{if(user?.role!=='admin'){toast('Only admins can add assets');return}$('#modalTitle').textContent='Add an asset';$('#modalSub').textContent='Create an asset record in this organization.';$('#modalFields').innerHTML=`<label class="field">Asset name<input id="assetName" placeholder="e.g. Service truck 04"></label><label class="field">Type<select id="assetKind"><option>vehicle</option><option>trailer</option><option>equipment</option></select></label><label class="field">Tracker ID (optional)<input id="deviceId" placeholder="Device serial number"></label>`;$('#modalback').style.display='grid';$('#modalSave').onclick=async()=>{try{let asset=await api('/assets',{method:'POST',body:JSON.stringify({name:$('#assetName').value,kind:$('#assetKind').value,device_id:$('#deviceId').value.trim()||null})});await refreshAssets();if(asset.device_token){$('#modalTitle').textContent='Save tracker credential';$('#modalSub').textContent='This secret is shown once. Copy it into the tracker configuration now.';$('#modalFields').innerHTML=`<label class="field">Device token<textarea id="issuedToken" readonly>${asset.device_token}</textarea></label><div style="font-size:11px;color:#ffcc7a">The token is stored as a hash. It cannot be recovered after you close this window.</div>`;$('#modalSave').textContent='Copy token and close';$('#modalSave').onclick=async()=>{try{await navigator.clipboard.writeText(asset.device_token)}catch{}closeModal();$('#modalSave').textContent='Save';$('#modalSave').onclick=saveObservation;toast('Asset added. Store its tracker token securely.')}}else{closeModal();$('#modalSave').onclick=saveObservation;toast('Asset added')}}catch(e){toast(e.message)}}};
-async function connectLive(){if(ws)ws.close();if(heartbeat)clearInterval(heartbeat);let proto=location.protocol==='https:'?'wss':'ws';let ticket;try{ticket=(await api('/live-ticket',{method:'POST'})).ticket}catch(e){return}ws=new WebSocket(`${proto}://${location.host}/api/live`,['dottracker',`ticket.${ticket}`]);ws.onopen=()=>{$('.live span').textContent='Live connection';heartbeat=setInterval(()=>{if(ws.readyState===1)ws.send('ping')},20000)};ws.onclose=()=>{$('.live span').textContent='Reconnecting…';setTimeout(()=>token&&connectLive(),3000)};ws.onmessage=()=>refreshAssets()}
-async function start(){try{user=await api('/me');$('#userEmail').textContent=user.email;setLogin(false);initMap();await Promise.all([refreshAssets(),refreshObs()]);flushPendingObservations();connectLive();setInterval(refreshAssets,15000);setInterval(refreshObs,60000)}catch(e){setLogin(true)}}if(token)start();
+let heartbeat = null;
+let reconnectTimer = null;
+let liveGeneration = 0;
+
+function stopLive() {
+    ++liveGeneration;
+    clearInterval(heartbeat);
+    clearTimeout(reconnectTimer);
+    const socket = ws;
+    ws = null;
+    socket?.close();
+}
+
+function scheduleReconnect(generation) {
+    if (!token || generation !== liveGeneration) return;
+    $('.live span').textContent = 'Reconnecting…';
+    reconnectTimer = setTimeout(connectLive, 3000);
+}
+
+async function connectLive() {
+    stopLive();
+    if (!token) return;
+    const generation = liveGeneration;
+    $('.live span').textContent = 'Connecting…';
+    try {
+        const {ticket} = await api('/live-ticket', {method:'POST'});
+        if (generation !== liveGeneration) return;
+        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const socket = new WebSocket(`${protocol}//${location.host}/api/live`, ['dottracker', `ticket.${ticket}`]);
+        ws = socket;
+        socket.onopen = () => {
+            if (ws !== socket) return;
+            $('.live span').textContent = 'Live connection';
+            heartbeat = setInterval(() => {
+                if (socket.readyState === WebSocket.OPEN) socket.send('ping');
+            }, 20000);
+        };
+        socket.onmessage = () => {
+            if (ws === socket) refreshAssets();
+        };
+        socket.onclose = () => {
+            if (ws !== socket) return;
+            ws = null;
+            clearInterval(heartbeat);
+            scheduleReconnect(generation);
+        };
+    } catch {
+        scheduleReconnect(generation);
+    }
+}
+
+let assetPoll = null;
+let observationPoll = null;
+async function start(){try{user=await api('/me');$('#userEmail').textContent=user.email;setLogin(false);initMap();await Promise.all([refreshAssets(),refreshObs()]);flushPendingObservations();connectLive();clearInterval(assetPoll);clearInterval(observationPoll);assetPoll=setInterval(refreshAssets,15000);observationPoll=setInterval(refreshObs,60000)}catch(e){setLogin(true)}}if(token)start();
