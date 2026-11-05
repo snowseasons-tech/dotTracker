@@ -255,3 +255,22 @@ def test_checkpoint_spatial_search_and_live_event(client):
     outside = client.get('/api/v1/checkpoints', headers=headers, params={**params, 'east': -105.5})
     assert outside.status_code == 200
     assert marker['id'] not in {row['id'] for row in outside.json()}
+
+
+def test_mobile_polygon_geofence_stores_postgis_geometry(client):
+    headers = login(client)
+    coordinates = [[-105.1, 39.7], [-105, 39.7], [-105, 39.8], [-105.1, 39.7]]
+    payload = {'name': 'Mobile property boundary', 'coordinates': coordinates}
+    assert client.post('/api/v1/geofences', json=payload).status_code == 401
+    response = client.post('/api/v1/geofences', headers=headers, json=payload)
+    assert response.status_code == 201
+    fence = response.json()
+    assert fence['geometry']['coordinates'] == coordinates[:-1]
+    with psycopg.connect(os.environ['DATABASE_URL']) as conn:
+        geometry = conn.execute("""SELECT ST_SRID(geom), ST_IsValid(geom),
+            ST_Covers(geom, ST_SetSRID(ST_MakePoint(-105.02,39.72),4326))
+            FROM geofences WHERE id=%s""", (fence['id'],)).fetchone()
+    assert geometry == (4326, True, True)
+    bow_tie = [[-105.1, 39.7], [-105, 39.8], [-105, 39.7], [-105.1, 39.8]]
+    assert client.post('/api/v1/geofences', headers=headers,
+                       json={**payload, 'coordinates': bow_tie}).status_code == 422

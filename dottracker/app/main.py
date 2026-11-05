@@ -359,6 +359,21 @@ def geofences(c=Depends(db),u=Depends(current_user)):
     return c.execute('SELECT id,name,shape,geometry,enabled FROM geofences WHERE org_id=%s ORDER BY name',(u['org_id'],)).fetchall()
 @app.post('/api/geofences')
 def add_geofence(b:GeofenceIn,c=Depends(db),u=Depends(admin)):
+    return save_geofence(b, c, u['org_id'])
+
+
+class PolygonGeofenceIn(StrictModel):
+    name: str = Field(min_length=1, max_length=120)
+    coordinates: list[tuple[float, float]] = Field(min_length=3, max_length=501)
+
+
+@app.post('/api/v1/geofences', status_code=201)
+def add_polygon_geofence(body: PolygonGeofenceIn, c=Depends(db), u=Depends(admin)):
+    geometry = {'coordinates': [list(point) for point in body.coordinates]}
+    return save_geofence(GeofenceIn(name=body.name, shape='polygon', geometry=geometry), c, u['org_id'])
+
+
+def save_geofence(b: GeofenceIn, c, org_id: int):
     if b.shape not in ('circle','polygon'): raise HTTPException(422,'shape must be circle or polygon')
     if b.shape=='circle':
         if not all(k in b.geometry for k in ('lat','lng','radius_m')): raise HTTPException(422,'circle needs lat, lng, radius_m')
@@ -366,19 +381,26 @@ def add_geofence(b:GeofenceIn,c=Depends(db),u=Depends(admin)):
         except (TypeError,ValueError): raise HTTPException(422,'circle coordinates and radius must be numbers')
         if not (-90<=lat<=90 and -180<=lng<=180 and 20<=r<=100000): raise HTTPException(422,'circle coordinates or radius are out of range')
     if b.shape=='polygon':
-        pts=b.geometry.get('coordinates',[])
-        if len(pts)<3 or len(pts)>500: raise HTTPException(422,'polygon needs 3 to 500 [lng,lat] points')
-        try: valid=all(len(p)==2 and -180<=float(p[0])<=180 and -90<=float(p[1])<=90 for p in pts)
-        except (TypeError,ValueError): valid=False
-        if not valid: raise HTTPException(422,'polygon points must be valid [lng,lat] coordinates')
-        ring=pts if pts[0]==pts[-1] else [*pts,pts[0]]
+        pts = b.geometry.get('coordinates')
+        if not isinstance(pts, list):
+            raise HTTPException(422, 'polygon needs 3 to 500 [lng,lat] vertices')
+        if len(pts) > 1 and pts[0] == pts[-1]:
+            pts = pts[:-1]
+        if not 3 <= len(pts) <= 500:
+            raise HTTPException(422, 'polygon needs 3 to 500 [lng,lat] vertices')
         try:
-            shape={'type':'Polygon','coordinates':[ring]}
-            valid_shape=c.execute('SELECT ST_IsValid(ST_SetSRID(ST_GeomFromGeoJSON(%s),4326)) valid',(json.dumps(shape),)).fetchone()['valid']
-        except psycopg.Error:
-            raise HTTPException(422,'polygon geometry is invalid')
-        if not valid_shape: raise HTTPException(422,'polygon must be a valid non-self-intersecting shape')
-    row=c.execute('INSERT INTO geofences(org_id,name,shape,geometry) VALUES(%s,%s,%s,%s) RETURNING id,name,shape,geometry,enabled',(u['org_id'],b.name,b.shape,json.dumps(b.geometry))).fetchone();c.commit();return row
+            if any(not isinstance(point, (tuple, list)) for point in pts):
+                raise ValueError
+            pts = [[float(lng), float(lat)] for lng, lat in pts]
+        except (TypeError, ValueError):
+            raise HTTPException(422, 'polygon points must be valid [lng,lat] coordinates')
+        if not all(-180 <= lng <= 180 and -90 <= lat <= 90 for lng, lat in pts):
+            raise HTTPException(422, 'polygon points must be valid [lng,lat] coordinates')
+        valid = c.execute('SELECT geofence_polygon(%s) IS NOT NULL AS valid', (Jsonb(pts),)).fetchone()['valid']
+        if not valid:
+            raise HTTPException(422, 'polygon must be a valid non-self-intersecting shape')
+        b.geometry['coordinates'] = pts
+    row=c.execute('INSERT INTO geofences(org_id,name,shape,geometry) VALUES(%s,%s,%s,%s) RETURNING id,name,shape,geometry,enabled',(org_id,b.name,b.shape,json.dumps(b.geometry))).fetchone();c.commit();return row
 @app.delete('/api/geofences/{fid}')
 def delete_geofence(fid:int,c=Depends(db),u=Depends(admin)):
     cur=c.execute('DELETE FROM geofences WHERE id=%s AND org_id=%s',(fid,u['org_id']));c.commit()
