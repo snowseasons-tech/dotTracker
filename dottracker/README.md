@@ -21,6 +21,14 @@ python3 emulator.py --count 3 --interval 5
 
 The demo tracker IDs and credential are seeded only in development. Do not reuse them. Demo seeding is disabled unless `APP_ENV=development` and `ALLOW_DEMO_SEED=true`; it is hard-disabled in production.
 
+## Replay a trip
+
+Open **History**, choose an asset and a local date range, and select **Load trip**. Use **Play** or the position slider to move through the recorded GPS fixes on the map. History covers the last 30 days and returns up to 10,000 fixes per request.
+
+## Drop an observation pin
+
+Choose **Drop observation**, then tap or click the map. On desktop, you can also right-click the map. The pin keeps the timestamp from when you chose its location, including when an offline submission syncs later. Add an optional note or link the pin to an asset. Use **Observations** on the map to show or hide the pins.
+
 ## Production deployment path
 
 This project is a production-oriented MVP for a controlled pilot. It has not received an independent penetration test or a live infrastructure rehearsal; use the release gates below before onboarding customers.
