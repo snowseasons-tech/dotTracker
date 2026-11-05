@@ -1,0 +1,65 @@
+name: dotTracker CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_DB: dottracker
+          POSTGRES_USER: dottracker
+          POSTGRES_PASSWORD: dottracker_dev
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U dottracker -d dottracker"
+          --health-interval 5s --health-timeout 5s --health-retries 15
+    env:
+      APP_ENV: development
+      ALLOW_DEMO_SEED: "true"
+      DATABASE_URL: postgresql://dottracker:dottracker_dev@localhost:5432/dottracker
+      MIGRATION_DATABASE_URL: postgresql://dottracker:dottracker_dev@localhost:5432/dottracker
+      JWT_SECRET: integration-test-secret-not-for-deployment-123456
+      DEVICE_TOKEN: demo-device-token
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: dottracker/requirements-test.txt
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-test.txt
+        working-directory: dottracker
+      - name: Create prior MVP schema fixture
+        run: psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/migrations/0001-initial.sql
+        working-directory: dottracker
+      - name: Upgrade schema through migration runner
+        run: python migrate.py
+        working-directory: dottracker
+      - name: Python compile check
+        run: python -m py_compile app/main.py app/geometry.py emulator.py migrate.py scripts/create_org.py tests/api_test.py
+        working-directory: dottracker
+      - name: JavaScript syntax check
+        run: node --input-type=module --check < app/static/app.js
+        working-directory: dottracker
+      - name: Unit and PostGIS API tests
+        run: python -m pytest -q
+        working-directory: dottracker
+      - name: Dependency audit
+        run: |
+          python -m pip install pip-audit==2.10.1
+          pip-audit -r requirements.txt
+        working-directory: dottracker
+      - name: Build API container
+        run: docker build -t dottracker-ci .
+        working-directory: dottracker

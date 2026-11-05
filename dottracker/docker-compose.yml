@@ -1,3 +1,4 @@
+# Local development only. Production uses docker-compose.production.yml with managed Postgres and TLS termination.
 services:
   db:
     image: postgis/postgis:17-3.5
@@ -5,7 +6,7 @@ services:
       POSTGRES_DB: dottracker
       POSTGRES_USER: dottracker
       POSTGRES_PASSWORD: dottracker_dev
-    ports: ["5432:5432"]
+    ports: ["127.0.0.1:5432:5432"]
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./sql/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
@@ -17,9 +18,17 @@ services:
   api:
     build: .
     env_file: .env
-    ports: ["8000:8000"]
+    ports: ["127.0.0.1:8000:8000"]
+    command: ["sh", "-c", "python migrate.py && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1"]
     depends_on:
       db: {condition: service_healthy}
-    volumes: ["./app:/app/app"]
+    volumes: ["./app:/app/app:ro"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
 volumes:
   postgres_data:
