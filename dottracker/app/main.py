@@ -110,7 +110,7 @@ def admin(u=Depends(current_user)):
 
 class StrictModel(BaseModel): model_config=ConfigDict(allow_inf_nan=False,extra='forbid',str_strip_whitespace=True)
 class Login(StrictModel): email:str=Field(min_length=3,max_length=320); password:str=Field(min_length=1,max_length=1024)
-class ObservationIn(StrictModel): lat:float=Field(ge=-90,le=90); lng:float=Field(ge=-180,le=180); observed_at:Optional[datetime]=None; note:str=Field(default='',max_length=2000); asset_id:Optional[int]=Field(default=None,gt=0); client_id:Optional[UUID]=None
+class ObservationIn(StrictModel): lat:float=Field(ge=-90,le=90); lng:float=Field(ge=-180,le=180); observed_at:Optional[datetime]=None; note:str=Field(default='',max_length=2000); asset_id:Optional[int]=Field(default=None,gt=0); client_id:Optional[UUID]=None; kind:Literal['observation','mobile_dot_checkpoint']='observation'
 class AssetIn(StrictModel): name:str=Field(min_length=1,max_length=120); kind:str=Field(default='vehicle',min_length=1,max_length=40); device_id:Optional[str]=Field(default=None,min_length=1,max_length=120)
 class GeofenceIn(StrictModel): name:str=Field(min_length=1,max_length=120); shape:str; geometry:dict
 class PositionIn(StrictModel): device_id:str=Field(min_length=1,max_length=120); token:str=Field(min_length=16,max_length=256); lat:float=Field(ge=-90,le=90); lng:float=Field(ge=-180,le=180); speed:float=Field(default=0,ge=0,le=1000); heading:Optional[float]=Field(default=None,ge=0,lt=360); recorded_at:Optional[datetime]=None
@@ -390,21 +390,21 @@ def add_observation(b:ObservationIn,c=Depends(db),u=Depends(current_user)):
     ts=require_aware(b.observed_at,'observed_at') if b.observed_at else datetime.now(timezone.utc)
     if ts>datetime.now(timezone.utc)+timedelta(minutes=5): raise HTTPException(422,'observed_at cannot be more than five minutes in the future')
     if b.client_id:
-        existing=c.execute('''SELECT id,asset_id,author_id,client_id,lat,lng,observed_at,note,photo_ref
+        existing=c.execute('''SELECT id,asset_id,author_id,client_id,lat,lng,observed_at,note,photo_ref,kind,expires_at
           FROM observations WHERE org_id=%s AND author_id=%s AND client_id=%s''',(u['org_id'],u['id'],b.client_id)).fetchone()
         if existing: return existing
     if b.asset_id and not c.execute('SELECT 1 FROM assets WHERE id=%s AND org_id=%s',(b.asset_id,u['org_id'])).fetchone(): raise HTTPException(404,'Asset not found')
-    row=c.execute('''INSERT INTO observations(org_id,asset_id,author_id,client_id,lat,lng,observed_at,note)
-      VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
+    row=c.execute('''INSERT INTO observations(org_id,asset_id,author_id,client_id,lat,lng,observed_at,note,kind,expires_at)
+      VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
       ON CONFLICT(org_id,author_id,client_id) DO UPDATE SET client_id=EXCLUDED.client_id
-      RETURNING id,asset_id,author_id,client_id,lat,lng,observed_at,note,photo_ref''',
-      (u['org_id'],b.asset_id,u['id'],b.client_id,b.lat,b.lng,ts,b.note.strip())).fetchone();c.commit();return row
+      RETURNING id,asset_id,author_id,client_id,lat,lng,observed_at,note,photo_ref,kind,expires_at''',
+      (u['org_id'],b.asset_id,u['id'],b.client_id,b.lat,b.lng,ts,b.note.strip(),b.kind,ts+timedelta(hours=2) if b.kind=='mobile_dot_checkpoint' else None)).fetchone();c.commit();return row
 @app.get('/api/observations')
 def observations(c=Depends(db),u=Depends(current_user),asset_id:Optional[int]=Query(default=None,gt=0),from_:Optional[datetime]=Query(None,alias='from'),to:Optional[datetime]=None):
     if from_: from_=require_aware(from_,'from')
     if to: to=require_aware(to,'to')
     if from_ and to and to<from_: raise HTTPException(422,'to must be at or after from')
-    q='SELECT o.id,o.asset_id,o.lat,o.lng,o.observed_at,o.note,o.author_id,u.email author FROM observations o JOIN users u ON u.id=o.author_id WHERE o.org_id=%s'; args=[u['org_id']]
+    q='SELECT o.id,o.client_id,o.kind,o.expires_at,o.asset_id,o.lat,o.lng,o.observed_at,o.note,o.author_id,u.email author FROM observations o JOIN users u ON u.id=o.author_id WHERE o.org_id=%s AND (o.expires_at IS NULL OR o.expires_at > now())'; args=[u['org_id']]
     if asset_id: q+=' AND o.asset_id=%s';args.append(asset_id)
     if from_: q+=' AND o.observed_at >= %s';args.append(from_)
     if to: q+=' AND o.observed_at <= %s';args.append(to)

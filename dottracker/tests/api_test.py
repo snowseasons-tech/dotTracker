@@ -209,3 +209,18 @@ def test_dispatch_status_replay_and_timestamp_conflict(client):
         assert response.json()['route']['revision'] == 2
         assert response.json()['route']['progress'] == {'job-1': 'completed'}
     assert client.get(path, headers=headers).json()['progress'] == {'job-1': 'completed'}
+
+
+def test_temporary_checkpoint_expiry(client):
+    headers = login(client)
+    now = datetime.now(timezone.utc)
+    report = {'kind': 'mobile_dot_checkpoint', 'lat': 39.7, 'lng': -105}
+    active = client.post('/api/observations', headers=headers,
+                         json={**report, 'observed_at': now.isoformat()})
+    expired = client.post('/api/observations', headers=headers,
+                          json={**report, 'observed_at': (now - timedelta(hours=3)).isoformat()})
+    assert active.status_code == expired.status_code == 200
+    assert datetime.fromisoformat(active.json()['expires_at']) == now + timedelta(hours=2)
+    visible = {row['id'] for row in client.get('/api/observations', headers=headers).json()}
+    assert active.json()['id'] in visible
+    assert expired.json()['id'] not in visible
