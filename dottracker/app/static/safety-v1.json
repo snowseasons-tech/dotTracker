@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "title": "Pre-trip and job-site safety check",
+  "items": {
+    "vehicle": "Check vehicle condition and controls",
+    "hydraulics": "Check bucket truck hydraulics and controls if used",
+    "chipper": "Check chipper guards and blades if used",
+    "ppe": "Check required personal protective equipment",
+    "site": "Review site hazards, work zones, and emergency access"
+  }
+}

@@ -458,6 +458,43 @@ def observations(c=Depends(db),u=Depends(current_user),asset_id:Optional[int]=Qu
     if from_: q+=' AND o.observed_at >= %s';args.append(from_)
     if to: q+=' AND o.observed_at <= %s';args.append(to)
     q+=' ORDER BY o.observed_at DESC LIMIT 2000';return c.execute(q,args).fetchall()
+SAFETY_TEMPLATE = json.loads((Path(__file__).parent / 'static' / 'safety-v1.json').read_text())
+
+
+class SafetySubmission(StrictModel):
+    submission_id: UUID
+    template_version: Literal[1]
+    completed_at: datetime
+    answers: dict[str, Literal['checked', 'concern', 'not_applicable']]
+    notes: str = Field(default='', max_length=2000)
+
+
+@app.post('/api/safety/submissions')
+def submit_safety_checklist(body: SafetySubmission, c=Depends(db), u=Depends(current_user)):
+    completed = require_aware(body.completed_at, 'completed_at')
+    if completed > datetime.now(timezone.utc) + timedelta(minutes=5):
+        raise HTTPException(422, 'Completion timestamp is too far in the future')
+    if body.answers.keys() != SAFETY_TEMPLATE['items'].keys():
+        raise HTTPException(422, 'Answer every checklist item')
+    if 'concern' in body.answers.values() and not body.notes.strip():
+        raise HTTPException(422, 'Add a note for any concern')
+    c.execute("""INSERT INTO safety_checklists
+        (org_id, author_id, submission_id, template_version, completed_at, answers, notes)
+        VALUES (%s,%s,%s,%s,%s,%s,%s) ON CONFLICT DO NOTHING""",
+        (u['org_id'], u['id'], body.submission_id, body.template_version, completed,
+         Jsonb(body.answers), body.notes.strip()))
+    c.commit()
+    return {'synced': True}
+
+
+@app.get('/api/safety/submissions')
+def safety_history(c=Depends(db), u=Depends(admin)):
+    return c.execute("""SELECT s.submission_id, s.template_version, s.completed_at, s.received_at,
+        s.answers, s.notes, u.email AS author FROM safety_checklists s
+        JOIN users u ON (u.id,u.org_id)=(s.author_id,s.org_id)
+        WHERE s.org_id=%s ORDER BY s.received_at DESC LIMIT 100""", (u['org_id'],)).fetchall()
+
+
 @app.get('/api/alerts')
 def alerts(c=Depends(db),u=Depends(current_user)):
     return c.execute('SELECT id,asset_id,geofence_id,message,created_at,read_at FROM alerts WHERE org_id=%s ORDER BY created_at DESC LIMIT 100',(u['org_id'],)).fetchall()

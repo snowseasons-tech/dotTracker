@@ -169,3 +169,7 @@ WHERE org_id = 1 AND kind = 'mobile_dot_checkpoint' AND expires_at > now()
 As an admin, choose **Geofences → Draw polygon**. Tap or click the map to add corners. Use **Undo corner** or **Reset** to adjust the draft. After placing at least three corners, choose **Close boundary** to preview the filled area, then **Name and save**. The server validates the boundary with PostGIS before saving it.
 
 Native clients can save a polygon with `POST /api/v1/geofences`, a dispatcher bearer token, and JSON containing `name` and `coordinates`. Send 3 to 500 distinct corners in longitude, latitude order. A repeated closing coordinate is optional. The endpoint returns HTTP 201 with the saved geofence. Apply migration `0007-geofence-spatial` to backfill and index valid polygon boundaries. Circle geofences keep their existing center and radius representation.
+
+### Crew safety checklist
+
+Open **Safety** online once to cache checklist version 1. Complete the five items and add a note for any concern. Submitting while offline saves the completed form to the browser's IndexedDB outbox. The dashboard retries on reconnect or sign-in. Dispatch admins can open **Review submissions** for the latest 100 records in their organization. Completion and receipt times are stored separately. Apply migration `0008-safety-checklists` before using the form.
