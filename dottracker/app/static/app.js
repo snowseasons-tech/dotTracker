@@ -1,10 +1,14 @@
 import * as maplibregl from 'https://unpkg.com/maplibre-gl@6.16.0/dist/maplibre-gl.mjs';
 const API='/api';let token=localStorage.getItem('dt_token'),refreshToken=localStorage.getItem('dt_refresh'),refreshPromise=null,user=null,map=null,assets=[],observations=[],selectedAsset=null,view='assets',assetsVisible=true,obsVisible=true,pendingPoint=null,observationCapturedAt=null,markers=new Map(),obsMarkers=[],ws=null;
 const $=s=>document.querySelector(s);function authHeaders(){return {'Authorization':'Bearer '+token,'Content-Type':'application/json'}}async function renewSession(){if(refreshPromise)return refreshPromise;refreshPromise=(async()=>{let r=await fetch(API+'/auth/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:refreshToken})});if(!r.ok)throw Error('Session expired');let d=await r.json();token=d.access_token;refreshToken=d.refresh_token;localStorage.setItem('dt_token',token);localStorage.setItem('dt_refresh',refreshToken)})().finally(()=>{refreshPromise=null});return refreshPromise}async function api(path,opts={},retried=false){let r=await fetch(API+path,{...opts,headers:{...authHeaders(),...(opts.headers||{})}});if(r.status===401){if(!retried&&refreshToken&&!path.includes('/auth/')){try{await renewSession();return api(path,opts,true)}catch{}}logout();throw Error('Session expired')}if(!r.ok){let e=await r.json().catch(()=>({detail:'Request failed'}));throw Error(e.detail||'Request failed')}return r.status===204?null:r.json()}
-function toast(msg){let t=$('#toast');t.textContent=msg;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}function setLogin(on){$('#login').style.display=on?'grid':'none'}function logout(){clearTrip();setPinMode(false);closeModal();let oldRefresh=refreshToken;if(oldRefresh)fetch(API+'/auth/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:oldRefresh})}).catch(()=>{});localStorage.removeItem('dt_token');localStorage.removeItem('dt_refresh');token=null;refreshToken=null;user=null;observations=[];obsMarkers.forEach(marker=>marker.remove());obsMarkers=[];map?.getSource('checkpoints')?.setData(checkpointFeatures());view='assets';$('#items').replaceChildren();document.querySelectorAll('.tab').forEach(tab=>tab.classList.toggle('active',tab.dataset.view===view));setLogin(true);stopLive();clearInterval(assetPoll);clearInterval(observationPoll)}
+function toast(msg){let t=$('#toast');t.textContent=msg;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}function setLogin(on){$('#login').style.display=on?'grid':'none'}function logout(){cancelFenceDrawing();clearTrip();setPinMode(false);closeModal();let oldRefresh=refreshToken;if(oldRefresh)fetch(API+'/auth/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:oldRefresh})}).catch(()=>{});localStorage.removeItem('dt_token');localStorage.removeItem('dt_refresh');token=null;refreshToken=null;user=null;observations=[];obsMarkers.forEach(marker=>marker.remove());obsMarkers=[];map?.getSource('checkpoints')?.setData(checkpointFeatures());view='assets';$('#items').replaceChildren();document.querySelectorAll('.tab').forEach(tab=>tab.classList.toggle('active',tab.dataset.view===view));setLogin(true);stopLive();clearInterval(assetPoll);clearInterval(observationPoll)}
 async function signIn(){try{let data=await fetch(API+'/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('#email').value,password:$('#password').value})}).then(async r=>{let d=await r.json();if(!r.ok)throw Error(d.detail||'Sign in failed');return d});token=data.access_token;refreshToken=data.refresh_token;localStorage.setItem('dt_token',token);localStorage.setItem('dt_refresh',refreshToken);start()}catch(e){$('#loginError').textContent=e.message}}
 $('#loginBtn').onclick=signIn;$('#password').onkeydown=e=>{if(e.key==='Enter')signIn()};$('#seedBtn').onclick=async()=>{try{let x=await fetch(API+'/dev/seed',{method:'POST'}).then(r=>r.json());toast(x.message||'Demo workspace initialized');await signIn()}catch(e){$('#loginError').textContent='Could not initialize demo workspace'}};$('#signout').onclick=logout;
-function initMap(){if(map)return;map=new maplibregl.Map({container:'map',style:'https://tiles.openfreemap.org/styles/dark',center:[-104.99,39.739],zoom:11});map.addControl(new maplibregl.NavigationControl(),'top-right');map.on('load',()=>{initCheckpointLayer();refreshAssets();refreshObs()});map.on('contextmenu', e => openObservation([e.lngLat.lng, e.lngLat.lat]));map.on('click', e => {
+function initMap(){if(map)return;map=new maplibregl.Map({container:'map',style:'https://tiles.openfreemap.org/styles/dark',center:[-104.99,39.739],zoom:11});map.addControl(new maplibregl.NavigationControl(),'top-right');map.on('load',()=>{initCheckpointLayer();refreshAssets();refreshObs()});map.on('contextmenu', e => {if (!fenceDraft) openObservation([e.lngLat.lng, e.lngLat.lat])});map.on('click', e => {
+    if (fenceDraft) {
+        addFenceCorner(e.lngLat.wrap());
+        return;
+    }
     if (pinMode) {
         openObservation([e.lngLat.lng, e.lngLat.lat]);
         return;
@@ -134,12 +138,16 @@ if(item.kind==='mobile_dot_checkpoint'){
     return;
 }
 try{const {user_id,org_id,...payload}=item;await api('/observations',{method:'POST',body:JSON.stringify(payload)});closeModal();await refreshObs();toast('Observation saved to your organization')}catch(e){if(!navigator.onLine||e instanceof TypeError){try{let queue=pendingObservationQueue();queue.push(item);savePendingObservationQueue(queue);closeModal();await refreshObs();toast('Observation saved on this device and will sync when online')}catch{toast('Could not save the offline observation on this device')}}else toast(e.message)}};
+const saveObservation = $('#modalSave').onclick;
 $('#dropPin').onclick = () => {
+    if (fenceDraft) cancelFenceDrawing();
     setPinMode(!pinMode);
     if (pinMode) toast('Tap or click the map to place an observation pin');
 };
 document.addEventListener('keydown', event => {
-    if (event.key === 'Escape' && pinMode) setPinMode(false);
+    if (event.key !== 'Escape') return;
+    if (fenceDraft) cancelFenceDrawing();
+    else if (pinMode) setPinMode(false);
 });
 $('#layerAssets').onclick=()=>{assetsVisible=!assetsVisible;$('#layerAssets').classList.toggle('active',assetsVisible);markers.forEach(m=>m.getElement().style.display=assetsVisible?'':'none')};$('#layerObs').onclick=()=>{obsVisible=!obsVisible;$('#layerObs').classList.toggle('active',obsVisible);obsMarkers.forEach(m=>m.getElement().style.display=obsVisible?'':'none');if(map?.getLayer('checkpoint-symbols'))map.setLayoutProperty('checkpoint-symbols','visibility',obsVisible?'visible':'none')};$('#search').oninput=()=>renderSidebar();document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{clearTrip();view=b.dataset.view;document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x===b));if(view==='history')openTripHistory();else renderSidebar()});
 let tripTimer = null;
@@ -274,9 +282,152 @@ async function loadTrip() {
 }
 
 $('#historyBtn').onclick = openTripHistory;
-$('#geoBtn').onclick=async()=>{try{let fences=await api('/geofences');if(!fences.length){toast('No geofences yet. Add a circle from the quick form.');showGeofenceForm();return}let f=fences[0],g=f.geometry;if(f.shape==='circle')map.flyTo({center:[g.lng,g.lat],zoom:14});else map.flyTo({center:g.coordinates[0],zoom:13});toast(`${fences.length} geofence${fences.length===1?'':'s'} configured`)}catch(e){toast(e.message)}};
-function showGeofenceForm(){if(user?.role!=='admin'){toast('Only admins can create geofences');return}$('#modalTitle').textContent='Create a geofence';$('#modalSub').textContent='Create a circle around the current map center.';$('#modalFields').innerHTML=`<label class="field">Name<input id="geoName" value="New geofence"></label><div class="row"><label class="field">Radius (meters)<input id="geoRadius" type="number" value="400" min="20"></label><label class="field">Center<input id="geoCenter" disabled value="Map center"></label></div>`;$('#modalback').style.display='grid';$('#modalSave').onclick=async()=>{try{let p=map.getCenter();await api('/geofences',{method:'POST',body:JSON.stringify({name:$('#geoName').value,shape:'circle',geometry:{lat:p.lat,lng:p.lng,radius_m:+$('#geoRadius').value}})});$('#modalSave').onclick=saveObservation;closeModal();toast('Geofence created')}catch(e){toast(e.message)}}}const saveObservation=$('#modalSave').onclick;
-$('#addAsset').onclick=()=>{if(user?.role!=='admin'){toast('Only admins can add assets');return}$('#modalTitle').textContent='Add an asset';$('#modalSub').textContent='Create an asset record in this organization.';$('#modalFields').innerHTML=`<label class="field">Asset name<input id="assetName" placeholder="e.g. Service truck 04"></label><label class="field">Type<select id="assetKind"><option>vehicle</option><option>trailer</option><option>equipment</option></select></label><label class="field">Tracker ID (optional)<input id="deviceId" placeholder="Device serial number"></label>`;$('#modalback').style.display='grid';$('#modalSave').onclick=async()=>{try{let asset=await api('/assets',{method:'POST',body:JSON.stringify({name:$('#assetName').value,kind:$('#assetKind').value,device_id:$('#deviceId').value.trim()||null})});await refreshAssets();if(asset.device_token){$('#modalTitle').textContent='Save tracker credential';$('#modalSub').textContent='This secret is shown once. Copy it into the tracker configuration now.';$('#modalFields').innerHTML=`<label class="field">Device token<textarea id="issuedToken" readonly>${asset.device_token}</textarea></label><div style="font-size:11px;color:#ffcc7a">The token is stored as a hash. It cannot be recovered after you close this window.</div>`;$('#modalSave').textContent='Copy token and close';$('#modalSave').onclick=async()=>{try{await navigator.clipboard.writeText(asset.device_token)}catch{}closeModal();$('#modalSave').textContent='Save';$('#modalSave').onclick=saveObservation;toast('Asset added. Store its tracker token securely.')}}else{closeModal();$('#modalSave').onclick=saveObservation;toast('Asset added')}}catch(e){toast(e.message)}}};
+let fenceDraft = null;
+let fenceClosed = false;
+
+function fenceDraftFeatures(points) {
+    const features = points.map(coordinates => ({
+        type:'Feature', properties:{}, geometry:{type:'Point', coordinates}
+    }));
+    if (points.length >= 2) {
+        features.push({type:'Feature', properties:{}, geometry:{
+            type:'LineString', coordinates:fenceClosed ? [...points, points[0]] : points
+        }});
+    }
+    if (fenceClosed) features.push({type:'Feature', properties:{}, geometry:{
+        type:'Polygon', coordinates:[[...points, points[0]]]
+    }});
+    return {type:'FeatureCollection', features};
+}
+
+function refreshFenceDraft() {
+    map.getSource('fence-draft').setData(fenceDraftFeatures(fenceDraft));
+    const count = fenceDraft.length;
+    $('#fenceInstructions').textContent = `Tap or click the map to add corners. ${count} of at least 3 placed.`;
+    $('#fenceUndo').disabled = count === 0;
+    $('#fenceInstructions').textContent = fenceClosed ? `Closed boundary with ${count} corners.` : $('#fenceInstructions').textContent;
+    $('#fenceClose').hidden = fenceClosed;
+    $('#fenceClose').disabled = count < 3;
+    $('#fenceFinish').hidden = !fenceClosed;
+}
+
+function addFenceCorner(point) {
+    if (fenceClosed) return;
+    if (fenceDraft.length >= 500) {
+        toast('A polygon can have up to 500 corners.');
+        return;
+    }
+    if (fenceDraft.some(([lng, lat]) => lng === point.lng && lat === point.lat)) return;
+    fenceDraft.push([point.lng, point.lat]);
+    refreshFenceDraft();
+}
+
+function cancelFenceDrawing() {
+    if (!fenceDraft) return;
+    fenceDraft = null;
+    fenceClosed = false;
+    $('#fenceDrawing').hidden = true;
+    for (const layer of ['fence-draft-corners', 'fence-draft-outline', 'fence-draft-fill']) map.removeLayer(layer);
+    map.removeSource('fence-draft');
+    if ($('#geoName')) closeModal();
+}
+
+function startFenceDrawing() {
+    if (!map?.isStyleLoaded()) {
+        toast('Wait for the map to finish loading.');
+        return;
+    }
+    cancelFenceDrawing();
+    setPinMode(false);
+    fenceDraft = [];
+    map.addSource('fence-draft', {type:'geojson', data:fenceDraftFeatures(fenceDraft)});
+    map.addLayer({id:'fence-draft-fill', type:'fill', source:'fence-draft',
+        filter:['==', ['geometry-type'], 'Polygon'], paint:{'fill-color':'#57d3c1', 'fill-opacity':0.25}});
+    map.addLayer({id:'fence-draft-outline', type:'line', source:'fence-draft',
+        filter:['==', ['geometry-type'], 'LineString'], paint:{'line-color':'#57d3c1', 'line-width':3}});
+    map.addLayer({id:'fence-draft-corners', type:'circle', source:'fence-draft',
+        filter:['==', ['geometry-type'], 'Point'], paint:{'circle-color':'#57d3c1', 'circle-radius':6,
+            'circle-stroke-color':'#111a24', 'circle-stroke-width':2}});
+    $('#fenceDrawing').hidden = false;
+    refreshFenceDraft();
+}
+
+$('#fenceUndo').onclick = () => {
+    if (fenceClosed) fenceClosed = false;
+    else fenceDraft.pop();
+    refreshFenceDraft();
+};
+$('#fenceReset').onclick = () => {
+    fenceClosed = false;
+    fenceDraft = [];
+    refreshFenceDraft();
+};
+$('#fenceClose').onclick = () => {
+    if (fenceDraft.length < 3) return;
+    fenceClosed = true;
+    refreshFenceDraft();
+};
+$('#fenceCancel').onclick = cancelFenceDrawing;
+$('#fenceFinish').onclick = () => showGeofenceForm('polygon');
+
+function showGeofenceForm(shape) {
+    const polygon = shape === 'polygon';
+    $('#modalTitle').textContent = polygon ? 'Save polygon geofence' : 'Create circle geofence';
+    $('#modalSub').textContent = polygon ? 'Give the drawn boundary a name.' : 'Use the current map center.';
+    $('#modalFields').innerHTML = `
+        <label class="field">Name <input id="geoName" maxlength="120" value="New geofence"></label>
+        ${polygon ? '' : '<label class="field">Radius (meters) <input id="geoRadius" type="number" value="400" min="20" max="100000"></label>'}`;
+    $('#modalback').style.display = 'grid';
+    $('#geoName').focus();
+    $('#modalSave').textContent = 'Save';
+    $('#modalSave').onclick = async () => {
+        const name = $('#geoName').value.trim();
+        if (!name) { toast('Enter a geofence name.'); return; }
+        const center = map.getCenter().wrap();
+        const geometry = polygon ? {coordinates:fenceDraft} :
+            {lat:center.lat, lng:center.lng, radius_m:$('#geoRadius').valueAsNumber};
+        const save = $('#modalSave');
+        save.disabled = true;
+        try {
+            await api('/geofences', {method:'POST', body:JSON.stringify({name, shape, geometry})});
+            cancelFenceDrawing();
+            closeModal();
+            toast('Geofence created');
+        } catch (error) {
+            toast(error.message);
+        } finally {
+            save.disabled = false;
+        }
+    };
+}
+
+async function locateGeofence() {
+    try {
+        const fences = await api('/geofences');
+        const fence = fences[0];
+        if (!fence) { toast('No geofences configured'); return; }
+        const geometry = fence.geometry;
+        const center = fence.shape === 'circle' ? [geometry.lng, geometry.lat] : geometry.coordinates[0];
+        map.flyTo({center, zoom:14});
+        toast(`${fences.length} configured geofences`);
+    } catch (error) { toast(error.message); }
+}
+
+$('#geoBtn').onclick = () => {
+    cancelFenceDrawing();
+    if (user?.role !== 'admin') { locateGeofence(); return; }
+    $('#modalTitle').textContent = 'Create a geofence';
+    $('#modalSub').textContent = 'Choose a shape for the property boundary.';
+    $('#modalFields').innerHTML = '<button class="btn" id="chooseCircle">Circle</button> <button class="btn" id="choosePolygon">Draw polygon</button> <button class="btn" id="locateFence">Find existing</button>';
+    $('#modalback').style.display = 'grid';
+    $('#modalSave').textContent = 'Close';
+    $('#modalSave').onclick = closeModal;
+    $('#locateFence').onclick = () => { closeModal(); locateGeofence(); };
+    $('#chooseCircle').onclick = () => showGeofenceForm('circle');
+    $('#choosePolygon').onclick = () => { closeModal(); startFenceDrawing(); };
+};
+
+$('#addAsset').onclick=()=>{if(user?.role!=='admin'){toast('Only admins can add assets');return}cancelFenceDrawing();$('#modalTitle').textContent='Add an asset';$('#modalSub').textContent='Create an asset record in this organization.';$('#modalFields').innerHTML=`<label class="field">Asset name<input id="assetName" placeholder="e.g. Service truck 04"></label><label class="field">Type<select id="assetKind"><option>vehicle</option><option>trailer</option><option>equipment</option></select></label><label class="field">Tracker ID (optional)<input id="deviceId" placeholder="Device serial number"></label>`;$('#modalback').style.display='grid';$('#modalSave').onclick=async()=>{try{let asset=await api('/assets',{method:'POST',body:JSON.stringify({name:$('#assetName').value,kind:$('#assetKind').value,device_id:$('#deviceId').value.trim()||null})});await refreshAssets();if(asset.device_token){$('#modalTitle').textContent='Save tracker credential';$('#modalSub').textContent='This secret is shown once. Copy it into the tracker configuration now.';$('#modalFields').innerHTML=`<label class="field">Device token<textarea id="issuedToken" readonly>${asset.device_token}</textarea></label><div style="font-size:11px;color:#ffcc7a">The token is stored as a hash. It cannot be recovered after you close this window.</div>`;$('#modalSave').textContent='Copy token and close';$('#modalSave').onclick=async()=>{try{await navigator.clipboard.writeText(asset.device_token)}catch{}closeModal();$('#modalSave').textContent='Save';$('#modalSave').onclick=saveObservation;toast('Asset added. Store its tracker token securely.')}}else{closeModal();$('#modalSave').onclick=saveObservation;toast('Asset added')}}catch(e){toast(e.message)}}};
 let dispatchDatabase;
 let dispatchSync;
 
