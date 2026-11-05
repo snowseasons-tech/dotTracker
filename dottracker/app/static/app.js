@@ -225,8 +225,9 @@ function syncDispatch(asset) {
                 headers: {'Idempotency-Key': mutation.mutation_id},
                 body: JSON.stringify(mutation)
             });
-            if (receipt?.synced !== true) throw Error('Status update was not acknowledged');
+            if (receipt?.synced !== true || !receipt.route) throw Error('Status update was not acknowledged');
             await changeCachedRoute(key, cached => {
+                if (!cached.route || receipt.route.revision >= cached.route.revision) cached.route = receipt.route;
                 cached.outbox = cached.outbox.filter(item => item.mutation_id !== mutation.mutation_id);
             });
         }
@@ -310,7 +311,13 @@ async function refreshDispatch(asset, {upload = false} = {}) {
     try {
         render(await changeCachedRoute(key));
         if (!isCurrent() || !navigator.onLine) return;
-        if (upload) await syncDispatch(asset);
+        if (upload) {
+            try {
+                await syncDispatch(asset);
+            } finally {
+                render(await changeCachedRoute(key));
+            }
+        }
         if (!isCurrent()) return;
         const route = await api(`/assets/${assetId}/dispatch-route`);
         if (!isCurrent()) return;

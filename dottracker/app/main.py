@@ -281,12 +281,16 @@ def require_route_plan(body: RouteRequest) -> RoutePlan:
     return plan
 
 
-@app.get('/api/assets/{asset_id}/dispatch-route')
-def get_dispatch_route(asset_id: int, c=Depends(db), u=Depends(current_user)):
-    route = c.execute("""SELECT revision, plan, COALESCE((
+def read_dispatch_route(c, asset_id: int, org_id: int):
+    return c.execute("""SELECT revision, plan, COALESCE((
         SELECT jsonb_object_agg(job_id, status) FROM dispatch_progress WHERE asset_id=dispatch_routes.asset_id
         ), '{}'::jsonb) AS progress FROM dispatch_routes
-        WHERE asset_id=%s AND org_id=%s""", (asset_id, u['org_id'])).fetchone()
+        WHERE asset_id=%s AND org_id=%s""", (asset_id, org_id)).fetchone()
+
+
+@app.get('/api/assets/{asset_id}/dispatch-route')
+def get_dispatch_route(asset_id: int, c=Depends(db), u=Depends(current_user)):
+    route = read_dispatch_route(c, asset_id, u['org_id'])
     if route is None:
         raise HTTPException(404, 'No dispatch route found')
     return route
@@ -315,7 +319,7 @@ def update_dispatch_status(asset_id: int, body: DispatchStatusMutation, backgrou
     accepted = c.execute("""INSERT INTO dispatch_mutations (asset_id, mutation_id) VALUES (%s, %s)
         ON CONFLICT DO NOTHING RETURNING mutation_id""", (asset_id, body.mutation_id)).fetchone()
     if not accepted:
-        return {'synced': True}
+        return {'synced': True, 'route': read_dispatch_route(c, asset_id, u['org_id'])}
     if not any(stop['job_id'] == body.job_id for stop in route['plan']['stops']):
         raise HTTPException(409, 'Job is no longer on this route')
     updated = c.execute("""INSERT INTO dispatch_progress (asset_id, job_id, status, changed_at, mutation_id)
@@ -324,11 +328,14 @@ def update_dispatch_status(asset_id: int, body: DispatchStatusMutation, backgrou
         WHERE (excluded.changed_at, excluded.mutation_id) >
               (dispatch_progress.changed_at, dispatch_progress.mutation_id)
         RETURNING job_id""", (asset_id, body.job_id, body.status, changed_at, body.mutation_id)).fetchone()
+    if updated:
+        c.execute('UPDATE dispatch_routes SET revision=revision+1 WHERE asset_id=%s', (asset_id,))
+    snapshot = read_dispatch_route(c, asset_id, u['org_id'])
     c.commit()
     if updated:
         background_tasks.add_task(hub.publish, u['org_id'],
-                                  {'type': 'route_updated', 'asset_id': asset_id, 'revision': route['revision']})
-    return {'synced': True}
+                                  {'type': 'route_updated', 'asset_id': asset_id, 'revision': snapshot['revision']})
+    return {'synced': True, 'route': snapshot}
 
 
 @app.put('/api/assets/{asset_id}/dispatch-route')

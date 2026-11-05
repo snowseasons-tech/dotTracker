@@ -204,5 +204,8 @@ def test_dispatch_status_replay_and_timestamp_conflict(client):
     assert client.post(path + '/status', headers=mismatch, json=completed).status_code == 422
     for mutation in (completed, completed, stale):
         replay_headers = {**headers, 'Idempotency-Key': mutation['mutation_id']}
-        assert client.post(path + '/status', headers=replay_headers, json=mutation).status_code == 200
+        response = client.post(path + '/status', headers=replay_headers, json=mutation)
+        assert response.status_code == 200
+        assert response.json()['route']['revision'] == 2
+        assert response.json()['route']['progress'] == {'job-1': 'completed'}
     assert client.get(path, headers=headers).json()['progress'] == {'job-1': 'completed'}
