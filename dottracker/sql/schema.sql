@@ -42,3 +42,10 @@ CREATE TABLE IF NOT EXISTS dispatch_mutations (
 );
 INSERT INTO schema_migrations(version) VALUES('0004-dispatch-progress') ON CONFLICT DO NOTHING;
 INSERT INTO schema_migrations(version) VALUES('0005-temporary-checkpoints') ON CONFLICT DO NOTHING;
+ALTER TABLE observations ADD COLUMN IF NOT EXISTS geom GEOMETRY(Point, 4326)
+    GENERATED ALWAYS AS (ST_SetSRID(ST_MakePoint(lng, lat), 4326)) STORED;
+CREATE INDEX IF NOT EXISTS observations_checkpoint_geom_idx ON observations USING GIST (geom)
+    WHERE kind = 'mobile_dot_checkpoint';
+CREATE INDEX IF NOT EXISTS observations_checkpoint_org_expiry_idx ON observations (org_id, expires_at)
+    WHERE kind = 'mobile_dot_checkpoint';
+INSERT INTO schema_migrations(version) VALUES('0006-checkpoint-spatial') ON CONFLICT DO NOTHING;

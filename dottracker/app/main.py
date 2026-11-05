@@ -386,7 +386,7 @@ def delete_geofence(fid:int,c=Depends(db),u=Depends(admin)):
     return {'deleted':True}
 
 @app.post('/api/observations')
-def add_observation(b:ObservationIn,c=Depends(db),u=Depends(current_user)):
+def add_observation(b:ObservationIn, background_tasks:BackgroundTasks, c=Depends(db),u=Depends(current_user)):
     ts=require_aware(b.observed_at,'observed_at') if b.observed_at else datetime.now(timezone.utc)
     if ts>datetime.now(timezone.utc)+timedelta(minutes=5): raise HTTPException(422,'observed_at cannot be more than five minutes in the future')
     if b.client_id:
@@ -394,11 +394,38 @@ def add_observation(b:ObservationIn,c=Depends(db),u=Depends(current_user)):
           FROM observations WHERE org_id=%s AND author_id=%s AND client_id=%s''',(u['org_id'],u['id'],b.client_id)).fetchone()
         if existing: return existing
     if b.asset_id and not c.execute('SELECT 1 FROM assets WHERE id=%s AND org_id=%s',(b.asset_id,u['org_id'])).fetchone(): raise HTTPException(404,'Asset not found')
-    row=c.execute('''INSERT INTO observations(org_id,asset_id,author_id,client_id,lat,lng,observed_at,note,kind,expires_at)
+    expires_at = ts + timedelta(hours=2) if b.kind == 'mobile_dot_checkpoint' else None
+    row=c.execute("""INSERT INTO observations(org_id,asset_id,author_id,client_id,lat,lng,observed_at,note,kind,expires_at)
       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-      ON CONFLICT(org_id,author_id,client_id) DO UPDATE SET client_id=EXCLUDED.client_id
-      RETURNING id,asset_id,author_id,client_id,lat,lng,observed_at,note,photo_ref,kind,expires_at''',
-      (u['org_id'],b.asset_id,u['id'],b.client_id,b.lat,b.lng,ts,b.note.strip(),b.kind,ts+timedelta(hours=2) if b.kind=='mobile_dot_checkpoint' else None)).fetchone();c.commit();return row
+      ON CONFLICT(org_id,author_id,client_id) DO NOTHING
+      RETURNING id,asset_id,author_id,client_id,lat,lng,observed_at,note,photo_ref,kind,expires_at""",
+      (u['org_id'],b.asset_id,u['id'],b.client_id,b.lat,b.lng,ts,b.note.strip(),b.kind,expires_at)).fetchone()
+    if row is None:
+        return c.execute("""SELECT id,asset_id,author_id,client_id,lat,lng,observed_at,note,photo_ref,kind,expires_at
+          FROM observations WHERE org_id=%s AND author_id=%s AND client_id=%s""",
+          (u['org_id'],u['id'],b.client_id)).fetchone()
+    c.commit()
+    if expires_at and expires_at > datetime.now(timezone.utc):
+        background_tasks.add_task(hub.publish, u['org_id'], {
+            'type': 'checkpoint_created',
+            'data': {'id': row['id'], 'latitude': row['lat'], 'longitude': row['lng'],
+                     'expires_at': expires_at.isoformat()}
+        })
+    return row
+
+
+@app.get('/api/v1/checkpoints')
+def checkpoints(west: float = Query(ge=-180, le=180), south: float = Query(ge=-90, le=90),
+                east: float = Query(ge=-180, le=180), north: float = Query(ge=-90, le=90),
+                c=Depends(db), u=Depends(current_user)):
+    if west >= east or south >= north:
+        raise HTTPException(422, 'Bounding box must have west < east and south < north')
+    return c.execute("""SELECT id, lat, lng, kind, note, observed_at, expires_at
+        FROM observations WHERE org_id=%s AND kind='mobile_dot_checkpoint' AND expires_at>now()
+        AND geom && ST_MakeEnvelope(%s,%s,%s,%s,4326)
+        ORDER BY observed_at DESC LIMIT 2000""", (u['org_id'], west, south, east, north)).fetchall()
+
+
 @app.get('/api/observations')
 def observations(c=Depends(db),u=Depends(current_user),asset_id:Optional[int]=Query(default=None,gt=0),from_:Optional[datetime]=Query(None,alias='from'),to:Optional[datetime]=None):
     if from_: from_=require_aware(from_,'from')
