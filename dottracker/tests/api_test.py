@@ -224,3 +224,34 @@ def test_temporary_checkpoint_expiry(client):
     visible = {row['id'] for row in client.get('/api/observations', headers=headers).json()}
     assert active.json()['id'] in visible
     assert expired.json()['id'] not in visible
+
+
+def test_checkpoint_spatial_search_and_live_event(client):
+    from uuid import uuid4
+
+    headers = login(client)
+    params = {'west': -106, 'south': 39, 'east': -104, 'north': 40}
+    payload = {'kind': 'mobile_dot_checkpoint', 'lat': 39.72, 'lng': -105.12,
+               'client_id': str(uuid4())}
+    ticket = client.post('/api/live-ticket', headers=headers).json()['ticket']
+    with client.websocket_connect('/api/live', subprotocols=['dottracker', f'ticket.{ticket}']) as socket:
+        socket.send_text('sync')
+        assert socket.receive_json() == {'type': 'sync_ready'}
+        created = client.post('/api/observations', headers=headers, json=payload)
+        assert created.status_code == 200
+        marker = created.json()
+        assert socket.receive_json() == {
+            'type': 'checkpoint_created',
+            'data': {'id': marker['id'], 'latitude': payload['lat'], 'longitude': payload['lng'],
+                     'expires_at': datetime.fromisoformat(marker['expires_at']).isoformat()}
+        }
+        replay = client.post('/api/observations', headers=headers, json=payload)
+        assert replay.json()['id'] == marker['id']
+        socket.send_text('sync')
+        assert socket.receive_json() == {'type': 'sync_ready'}
+    response = client.get('/api/v1/checkpoints', headers=headers, params=params)
+    assert response.status_code == 200
+    assert marker['id'] in {row['id'] for row in response.json()}
+    outside = client.get('/api/v1/checkpoints', headers=headers, params={**params, 'east': -105.5})
+    assert outside.status_code == 200
+    assert marker['id'] not in {row['id'] for row in outside.json()}

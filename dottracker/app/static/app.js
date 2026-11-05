@@ -71,13 +71,15 @@ function observationPopup(item) {
     return `<div class="obs-popup"><b>${esc(label)}</b>${item.note?`<br>${esc(item.note)}`:''}<br>${esc(item.author||'You')}${item.pending?'<br>Waiting for connection':''}<br>${new Date(item.observed_at).toLocaleString()}</div>`;
 }
 
-async function refreshObs() {
+async function refreshObs({localOnly = false} = {}) {
     const scope = user;
     if (!scope) return;
     let confirmed = observations.filter(item => !item.pending);
-    try {
-        confirmed = await api('/observations');
-    } catch {}
+    if (!localOnly && navigator.onLine) {
+        try {
+            confirmed = await api('/observations');
+        } catch {}
+    }
     if (user !== scope) return;
     const now = Date.now();
     confirmed = confirmed.filter(item => !item.expires_at || Date.parse(item.expires_at) > now);
@@ -126,7 +128,7 @@ if(item.kind==='mobile_dot_checkpoint'){
         if(queue.length>=1000)throw Error('Observation outbox is full');
         savePendingObservationQueue([...queue,item]);
         closeModal();
-        await refreshObs();
+        await refreshObs({localOnly:true});
         await flushPendingObservations();
     }catch(error){toast(error.message)}
     return;
@@ -481,6 +483,7 @@ async function connectLive() {
             if (ws !== socket) return;
             const message = JSON.parse(event.data);
             if (message.type === 'position') refreshAssets();
+            if (message.type === 'checkpoint_created' || message.type === 'sync_ready') refreshObs();
             if (message.type === 'sync_ready' || message.type === 'route_updated') {
                 const asset = $('#dispatchAsset');
                 if (!dispatchSync && view === 'dispatch' && asset?.value &&

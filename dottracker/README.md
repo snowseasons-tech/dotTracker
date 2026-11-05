@@ -152,3 +152,14 @@ Apply migration `0004-dispatch-progress` before using status sync. The API dedup
 Choose **Drop observation**, place the pin, then select **Temporary inspection checkpoint** as the pin type. Checkpoint reports queue in browser storage before upload and use the observation layer. They expire two hours after capture, including reports uploaded later. Apply migration `0005-temporary-checkpoints` before using this pin type.
 
 The route sorter uses caller-supplied road travel times. Checkpoint pins do not alter that matrix. Road-level detours require a routing provider that can map a location to an affected road segment and return updated travel times.
+
+Migration `0006-checkpoint-spatial` adds generated PostGIS points and a checkpoint-only GiST index. Clients can query active checkpoint reports in a bounding box with `GET /api/v1/checkpoints?west=-106&south=39&east=-104&north=40`. Writes use the existing `POST /api/observations` endpoint with `kind: "mobile_dot_checkpoint"` and a client UUID in `client_id`. Only a newly inserted, unexpired checkpoint emits a `checkpoint_created` event to the organization. The web dashboard refreshes its observation layer on that event and after reconnecting.
+
+Use representative data to inspect the spatial query plan. PostgreSQL may prefer a sequential or organization index scan for a small fixture.
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT id FROM observations
+WHERE org_id = 1 AND kind = 'mobile_dot_checkpoint' AND expires_at > now()
+  AND geom && ST_MakeEnvelope(-106, 39, -104, 40, 4326);
+```
