@@ -67,8 +67,11 @@ def test_org_scope_and_viewer_permissions(client):
 def test_tracker_auth_idempotency_and_geofence_alerts(client):
     with psycopg.connect(os.environ['DATABASE_URL']) as conn:
         asset_id = conn.execute("SELECT id FROM assets WHERE device_id='truck-01'").fetchone()[0]
+        # Keep both fixes after the seed position and within the history window.
+        conn.execute("UPDATE positions SET recorded_at = now() - interval '1 minute' WHERE asset_id=%s",
+                     (asset_id,))
     headers = {'Content-Type': 'application/json'}
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc) - timedelta(seconds=10)
     fix = {'device_id': 'truck-01', 'token': 'wrong-device-credential', 'lat': 39.75,
            'lng': -104.9903, 'speed': 0, 'recorded_at': now.isoformat()}
     assert client.post('/api/ingest', headers=headers, json=fix).status_code == 401
