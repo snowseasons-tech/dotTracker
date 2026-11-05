@@ -146,3 +146,9 @@ The live event hub runs in the API process. Keep the existing single-worker depl
 Open the Dispatch tab while connected and select the crew asset to cache its stop list. In that tab, change a job to pending, completed, or skipped. The browser writes a UUID and UTC timestamp to the IndexedDB outbox before confirming the local change. The status count shows queued changes. The selected route replays changes oldest first after reconnect or when the tab resumes. Each request includes its UUID in the `Idempotency-Key` header. The browser removes only the acknowledged entry. A failed upload stops replay and keeps the remaining entries for retry.
 
 Apply migration `0004-dispatch-progress` before using status sync. The API deduplicates mutation UUIDs and resolves competing status updates by UTC timestamp, using the UUID to break ties. Use a stable job ID per asset when publishing replacement routes so progress follows the same job. This browser implementation caches the selected itinerary and progress. It requires an already loaded dashboard for offline use.
+
+### Report a temporary inspection checkpoint
+
+Choose **Drop observation**, place the pin, then select **Temporary inspection checkpoint** as the pin type. Checkpoint reports queue in browser storage before upload and use the observation layer. They expire two hours after capture, including reports uploaded later. Apply migration `0005-temporary-checkpoints` before using this pin type.
+
+The route sorter uses caller-supplied road travel times. Checkpoint pins do not alter that matrix. Road-level detours require a routing provider that can map a location to an affected road segment and return updated travel times.
