@@ -30,6 +30,19 @@ if not 1<=ACCESS_MINUTES<=60:
 pwd=PasswordHasher()
 DUMMY_PASSWORD_HASH=pwd.hash('timing-equalization-value-not-a-real-account')
 
+SUPPORTED_SCHEMA_VERSIONS=frozenset({
+    '0002-hardened-mvp',
+    '0003-dispatch-routes',
+    '0004-dispatch-progress',
+    '0005-temporary-checkpoints',
+    '0006-checkpoint-spatial',
+    '0007-geofence-spatial',
+    '0008-safety-checklists',
+})
+
+def missing_schema_versions(applied_versions):
+    return SUPPORTED_SCHEMA_VERSIONS - set(applied_versions)
+
 if IS_PRODUCTION:
     if len(JWT_SECRET)<32 or 'REPLACE' in JWT_SECRET or JWT_SECRET=='local-only-change-this-secret-32-chars':
         raise RuntimeError('Production requires a unique JWT_SECRET of at least 32 characters')
@@ -54,8 +67,10 @@ async def lifespan(app):
         try:
             with psycopg.connect(DATABASE_URL) as c:
                 c.execute('SELECT 1')
-                migrated=c.execute("SELECT 1 FROM schema_migrations WHERE version='0002-hardened-mvp'").fetchone()
-                if not migrated: raise RuntimeError('Database schema migration 0002-hardened-mvp is required')
+                applied_versions={row[0] for row in c.execute('SELECT version FROM schema_migrations').fetchall()}
+                missing=missing_schema_versions(applied_versions)
+                if missing:
+                    raise RuntimeError('Database schema is incomplete; missing migrations: '+', '.join(sorted(missing)))
             break
         except psycopg.OperationalError:
             await asyncio.sleep(1)
