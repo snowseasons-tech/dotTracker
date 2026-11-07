@@ -12,7 +12,7 @@ os.environ.setdefault('JWT_SECRET', 'integration-test-secret-not-for-deployment-
 os.environ.setdefault('DEVICE_TOKEN', 'demo-device-token')
 os.environ.setdefault('DATABASE_URL', 'postgresql://dottracker:dottracker_dev@localhost:5432/dottracker')
 
-from app.main import app, pwd  # noqa: E402
+from app.main import app, pwd, SUPPORTED_SCHEMA_VERSIONS, missing_schema_versions  # noqa: E402
 
 
 @pytest.fixture(scope='session')
@@ -37,6 +37,12 @@ def create_second_org():
                         (org_id, 'viewer-isolation@test.invalid', pwd.hash('test-viewer-password-long'), 'viewer'))
             cur.execute("INSERT INTO assets(org_id,name,kind) VALUES(%s,'Tenant B Only','vehicle')", (org_id,))
     return org_id
+
+
+def test_schema_gate_requires_every_supported_migration():
+    assert missing_schema_versions(SUPPORTED_SCHEMA_VERSIONS) == set()
+    prior_schema = {'0002-hardened-mvp'}
+    assert missing_schema_versions(prior_schema) == SUPPORTED_SCHEMA_VERSIONS - prior_schema
 
 
 def test_readiness_and_security_headers(client):
