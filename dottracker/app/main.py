@@ -583,10 +583,18 @@ async def live(ws:WebSocket):
                 await ws.send_json({'type': 'sync_ready'})
     except WebSocketDisconnect: hub.remove(ws,org)
 
+def demo_seed_enabled(app_env=APP_ENV, setting=None):
+    enabled = os.getenv('ALLOW_DEMO_SEED', 'false') if setting is None else setting
+    return app_env.lower() != 'production' and enabled.lower() == 'true'
+
+@app.get('/api/config')
+def client_config():
+    return {'demo_seed_enabled': demo_seed_enabled()}
+
 @app.post('/api/dev/seed')
 def seed(c=Depends(db)):
     # One-time demo bootstrap; disabled outside explicit local development.
-    if IS_PRODUCTION or os.getenv('ALLOW_DEMO_SEED','false').lower()!='true': raise HTTPException(404,'Not found')
+    if not demo_seed_enabled(): raise HTTPException(404,'Not found')
     if c.execute('SELECT 1 FROM users LIMIT 1').fetchone(): return {'seeded':False,'message':'Database already has users'}
     org=c.execute("INSERT INTO organizations(name) VALUES('Snow Seasons Demo Fleet') RETURNING id").fetchone()['id']
     user=c.execute('INSERT INTO users(org_id,email,password_hash,role) VALUES(%s,%s,%s,%s) RETURNING id,org_id,email,role',(org,'admin@dottracker.local',pwd.hash('dottracker-demo'), 'admin')).fetchone()
