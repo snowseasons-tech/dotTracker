@@ -1,5 +1,7 @@
 # dotTracker · production-oriented MVP
 
+Development and release gates: see [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md) and the step-by-step [PRODUCTION_WORKFLOW.md](PRODUCTION_WORKFLOW.md). The API refuses to start unless all supported migrations through `0008-safety-checklists` are applied.
+
 A pilot fleet-tracking application with a responsive MapLibre dashboard, FastAPI API, PostgreSQL/PostGIS schema, Argon2id password hashing, rotating opaque refresh sessions, org-scoped access, individual tracker credentials, short-lived one-use WebSocket tickets, duplicate-fix and observation idempotency, offline observation queueing, trip history, circle/polygon geofences, alerts, and observation pins.
 
 ## Local development
