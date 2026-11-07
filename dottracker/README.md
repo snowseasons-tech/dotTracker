@@ -31,7 +31,20 @@ Open **History**, choose an asset and a local date range, and select **Load trip
 
 Choose **Drop observation**, then tap or click the map. On desktop, you can also right-click the map. The pin keeps the timestamp from when you chose its location, including when an offline submission syncs later. Add an optional note or link the pin to an asset. Use **Observations** on the map to show or hide the pins.
 
+## Manage team invitations
+
+Workspace admins can open **Team**, enter an email address, choose **Viewer** or **Administrator**, and create an invitation link. Copy the link and send it through a trusted channel; the app does not send invitation email. Treat the link like a credential: it can be used once and expires after 48 hours. Creating a replacement invitation for the same email invalidates the earlier pending link.
+
+The invited person opens the link, sets and confirms a password of at least 14 characters, and is signed in to the invited workspace. The invitation token stays in the URL fragment and is removed from the address bar after acceptance. An invalid, expired, or previously used link must be replaced by a workspace admin.
+
 ## Production deployment path
+
+Use the step-by-step [production development and release workflow](PRODUCTION_WORKFLOW.md) for database setup, migration, TLS ingress, staging acceptance, backup restore, release, and rollback.
+
+The production Compose profile expects an operator-provisioned PostgreSQL 17 + PostGIS 3.5 database, a private TLS reverse proxy or managed edge, and separate least-privilege runtime and migration credentials. New databases receive `sql/schema.sql` once; supported existing databases are upgraded by `migrate.py`. The API refuses to start until migrations 0002 through 0008 are recorded.
+
+Production hosting, database credentials, TLS ingress, monitoring, and a verified backup restore are not configured in this repository. dotTracker is not production-verified until the staging gates in the workflow have passed.
+
 
 This project is a production-oriented MVP for a controlled pilot. It has not received an independent penetration test or a live infrastructure rehearsal; use the release gates below before onboarding customers.
 
@@ -88,8 +101,9 @@ The production compose profile runs as a non-root user, drops Linux capabilities
 
 ## API
 
+- `GET /api/config` (public UI configuration; reports whether local demo seeding is enabled)
 - `POST /api/auth/login`, `POST /api/auth/refresh`, `POST /api/auth/logout`, `GET /api/me`
-- `POST /api/invites` (admin; returns a one-time 48-hour token for secure out-of-band delivery), `POST /api/invites/accept`
+- `POST /api/invites` (admin; creates a one-use 48-hour invite token for secure link delivery), `POST /api/invites/accept`
 - `GET /api/assets`, `POST /api/assets` (admin; optional `device_id` provisions a tracker)
 - `POST /api/assets/{id}/device/rotate` (admin)
 - `GET /api/assets/{id}/positions?from=&to=` (last 30 days)
@@ -100,18 +114,20 @@ The production compose profile runs as a non-root user, drops Linux capabilities
 - `POST /api/live-ticket`, `WS /api/live` (one-use ticket via subprotocol)
 - `GET /health` (database readiness), `GET /health/live` (process liveness)
 
-Circle geometry: `{ "lat": 39.7, "lng": -105.0, "radius_m": 400 }`. Polygon geometry uses `[longitude, latitude]` pairs: `{ "coordinates": [[-105,39],[-104,39],[-104,40]] }`.
-
 ## Verification
 
-Run local checks:
+Run the checks from this directory with a disposable PostgreSQL 17 + PostGIS 3.5 database:
 
 ```bash
-python3 -m unittest discover -s tests -v
-python3 -m py_compile app/main.py app/geometry.py emulator.py migrate.py scripts/create_org.py tests/api_test.py
+python -m pip install -r requirements-test.txt
+python -m pytest -q
+python -m py_compile app/main.py app/geometry.py emulator.py migrate.py scripts/create_org.py tests/api_test.py
+node --input-type=module --check < app/static/app.js
+pip-audit -r requirements.txt
+docker build -t dottracker:review .
 ```
 
-GitHub Actions also runs PostgreSQL/PostGIS API integration tests against the previous-schema migration, JavaScript syntax checking, dependency auditing, and a container build on each push and pull request. A full release gate must additionally scan the container image, verify backup restore, and exercise deployment behind the actual TLS proxy. The database migration and API integration gates have been defined but could not be executed in this workspace because Docker, PostgreSQL, and the application dependencies are unavailable.
+GitHub Actions runs the PostgreSQL/PostGIS migration and API suite, Python and JavaScript syntax checks, dependency audit, and container build for each pull request. A CI pass does not replace staging checks for TLS ingress, backup restore, monitoring, and the deployment path; see [PRODUCTION_WORKFLOW.md](PRODUCTION_WORKFLOW.md).
 
 ## Run integration tests with Docker
 

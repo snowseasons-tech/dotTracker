@@ -1,6 +1,6 @@
 import * as maplibregl from 'https://unpkg.com/maplibre-gl@6.16.0/dist/maplibre-gl.mjs';
 const API='/api';let token=localStorage.getItem('dt_token'),refreshToken=localStorage.getItem('dt_refresh'),refreshPromise=null,user=null,map=null,assets=[],observations=[],selectedAsset=null,view='assets',assetsVisible=true,obsVisible=true,pendingPoint=null,observationCapturedAt=null,markers=new Map(),obsMarkers=[],ws=null;
-const $=s=>document.querySelector(s);function authHeaders(){return {'Authorization':'Bearer '+token,'Content-Type':'application/json'}}async function renewSession(){if(refreshPromise)return refreshPromise;refreshPromise=(async()=>{let r=await fetch(API+'/auth/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:refreshToken})});if(!r.ok)throw Error('Session expired');let d=await r.json();token=d.access_token;refreshToken=d.refresh_token;localStorage.setItem('dt_token',token);localStorage.setItem('dt_refresh',refreshToken)})().finally(()=>{refreshPromise=null});return refreshPromise}async function api(path,opts={},retried=false){let r=await fetch(API+path,{...opts,headers:{...authHeaders(),...(opts.headers||{})}});if(r.status===401){if(!retried&&refreshToken&&!path.includes('/auth/')){try{await renewSession();return api(path,opts,true)}catch{}}logout();throw Error('Session expired')}if(!r.ok){let e=await r.json().catch(()=>({detail:'Request failed'}));throw Error(e.detail||'Request failed')}return r.status===204?null:r.json()}
+const $=s=>document.querySelector(s);const inviteToken = new URLSearchParams(location.hash.slice(1)).get('invite');function authHeaders(){return {'Authorization':'Bearer '+token,'Content-Type':'application/json'}}async function renewSession(){if(refreshPromise)return refreshPromise;refreshPromise=(async()=>{let r=await fetch(API+'/auth/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:refreshToken})});if(!r.ok)throw Error('Session expired');let d=await r.json();token=d.access_token;refreshToken=d.refresh_token;localStorage.setItem('dt_token',token);localStorage.setItem('dt_refresh',refreshToken)})().finally(()=>{refreshPromise=null});return refreshPromise}async function api(path,opts={},retried=false){let r=await fetch(API+path,{...opts,headers:{...authHeaders(),...(opts.headers||{})}});if(r.status===401){if(!retried&&refreshToken&&!path.includes('/auth/')){try{await renewSession();return api(path,opts,true)}catch{}}logout();throw Error('Session expired')}if(!r.ok){let e=await r.json().catch(()=>({detail:'Request failed'}));throw Error(e.detail||'Request failed')}return r.status===204?null:r.json()}
 function toast(msg){let t=$('#toast');t.textContent=msg;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}function setLogin(on){$('#login').style.display=on?'grid':'none'}function logout(){cancelFenceDrawing();clearTrip();setPinMode(false);closeModal();let oldRefresh=refreshToken;if(oldRefresh)fetch(API+'/auth/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:oldRefresh})}).catch(()=>{});localStorage.removeItem('dt_token');localStorage.removeItem('dt_refresh');token=null;refreshToken=null;user=null;observations=[];obsMarkers.forEach(marker=>marker.remove());obsMarkers=[];map?.getSource('checkpoints')?.setData(checkpointFeatures());view='assets';$('#items').replaceChildren();document.querySelectorAll('.tab').forEach(tab=>tab.classList.toggle('active',tab.dataset.view===view));setLogin(true);stopLive();setLiveState('offline','Disconnected');clearInterval(assetPoll);clearInterval(observationPoll)}
 async function signIn(){try{let data=await fetch(API+'/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('#email').value,password:$('#password').value})}).then(async r=>{let d=await r.json();if(!r.ok)throw Error(d.detail||'Sign in failed');return d});token=data.access_token;refreshToken=data.refresh_token;localStorage.setItem('dt_token',token);localStorage.setItem('dt_refresh',refreshToken);start()}catch(e){$('#loginError').textContent=e.message}}
 $('#loginBtn').onclick=signIn;$('#password').onkeydown=e=>{if(e.key==='Enter')signIn()};
@@ -36,6 +36,48 @@ $('#seedBtn').onclick=async()=>{
     }
 };
 $('#signout').onclick=logout;
+function configureInvitation(){
+    if (!inviteToken) return;
+    $('#signInPanel').hidden = true;
+    $('#inviteAcceptance').hidden = false;
+}
+configureInvitation();
+$('#inviteAcceptance').addEventListener('submit', async event => {
+    event.preventDefault();
+    const password = $('#invitePassword').value;
+    if (password !== $('#invitePasswordConfirm').value) {
+        $('#inviteError').textContent = 'Passwords do not match.';
+        return;
+    }
+    try {
+        const response = await fetch(API+'/invites/accept', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({token:inviteToken,password})
+        });
+        const result = await response.json().catch(()=>({}));
+        if (!response.ok) throw new Error(result.detail || 'Could not accept invitation');
+        token = result.access_token;
+        refreshToken = result.refresh_token;
+        localStorage.setItem('dt_token', token);
+        localStorage.setItem('dt_refresh', refreshToken);
+        history.replaceState(null, '', location.pathname + location.search);
+        $('#inviteError').textContent = '';
+        setLogin(false);
+        start();
+    } catch (error) {
+        $('#inviteError').textContent = error.message;
+    }
+});
+$('#inviteBack').onclick = () => {
+    history.replaceState(null, '', location.pathname + location.search);
+    $('#inviteAcceptance').hidden = true;
+    $('#signInPanel').hidden = false;
+    if (token) {
+        setLogin(false);
+        start();
+    }
+};
 function initMap(){if(map)return;map=new maplibregl.Map({container:'map',style:'https://tiles.openfreemap.org/styles/dark',center:[-104.99,39.739],zoom:11});map.addControl(new maplibregl.NavigationControl(),'top-right');map.on('load',()=>{initCheckpointLayer();refreshAssets();refreshObs()});map.on('contextmenu', e => {if (!fenceDraft) openObservation([e.lngLat.lng, e.lngLat.lat])});map.on('click', e => {
     if (fenceDraft) {
         addFenceCorner(e.lngLat.wrap());
@@ -83,7 +125,63 @@ async function refreshAssets() {
             : 'Asset data unavailable · retrying';
     }
 }
-function renderSidebar(){let counts={moving:0,stopped:0,offline:0};assets.forEach(a=>counts[a.status]++);$('#movingCount').textContent=counts.moving;$('#stoppedCount').textContent=counts.stopped;$('#offlineCount').textContent=counts.offline;let root=$('#items');if(view==='safety'){if(!root.querySelector('#safetyPanel'))renderSafety(root);return}if(view==='dispatch'){renderDispatch(root);return}if(view==='history'&&root.querySelector('#tripForm'))return;if(view==='assets'){let q=$('#search').value.toLowerCase();let list=assets.filter(a=>a.name.toLowerCase().includes(q));root.innerHTML=list.map(a=>`<div class="asset ${a.id===selectedAsset?'sel':''}" data-id="${a.id}"><i class="assetdot ${a.status}"></i><div class="assetinfo"><div class="assetname">${esc(a.name)}</div><div class="assetmeta">${esc(a.kind)} · ${a.recorded_at?new Date(a.recorded_at).toLocaleTimeString():'No GPS fix'}</div></div><span class="speed">${a.speed?Math.round(a.speed)+' km/h':''}</span></div>`).join('')||'<div class="empty">No assets match your search.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{selectedAsset=+el.dataset.id;let a=assets.find(x=>x.id===selectedAsset);if(a?.lat)map.flyTo({center:[a.lng,a.lat],zoom:14});renderSidebar()});return}if(view==='observations'){root.innerHTML=observations.map(o=>`<div class="asset" data-id="${o.id}"><i class="assetdot" style="background:#70a7ff"></i><div class="assetinfo"><div class="assetname">${esc(o.note||(o.kind==='mobile_dot_checkpoint'?'Temporary inspection checkpoint':'Observation pin'))}</div><div class="assetmeta">${esc(o.author)} · ${new Date(o.observed_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No observations yet. Right-click the map to add one.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{let o=observations.find(x=>x.id==el.dataset.id);map.flyTo({center:[o.lng,o.lat],zoom:15})});return}if(view==='alerts'){api('/alerts').then(rows=>{if(view!=='alerts')return;root.innerHTML=rows.map(a=>`<div class="asset"><i class="assetdot" style="background:#f2b95d"></i><div class="assetinfo"><div class="assetname">${esc(a.message)}</div><div class="assetmeta">${new Date(a.created_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No alerts. Geofence events will appear here.</div>'});return}root.innerHTML='<div class="empty">Select an asset to browse up to 30 days of trip history.</div>'}
+function renderTeam(root) {
+    if (user?.role !== 'admin') {
+        root.innerHTML = '<div class="empty" role="alert">Team invitations are available to workspace admins.</div>';
+        return;
+    }
+    root.innerHTML = `<section id="teamPanel">
+        <h3>Invite a teammate</h3>
+        <p class="assetmeta">Create a single-use invitation that expires in 48 hours. Copy the link and deliver it through a trusted channel.</p>
+        <form id="teamInviteForm">
+            <label class="field">Email address<input id="teamInviteEmail" type="email" maxlength="320" autocomplete="email" required></label>
+            <label class="field">Workspace role<select id="teamInviteRole"><option value="viewer">Viewer</option><option value="admin">Administrator</option></select></label>
+            <button class="btn primary" id="createTeamInvite" type="submit">Create invite link</button>
+        </form>
+        <div class="error" id="teamInviteError" role="status" aria-live="polite"></div>
+        <section id="teamInviteResult" hidden>
+            <p id="teamInviteMessage" role="status"></p>
+            <label class="field">Invite link<input id="teamInviteLink" readonly></label>
+            <button class="btn" id="copyTeamInvite" type="button">Copy invite link</button>
+        </section>
+    </section>`;
+    $('#teamInviteForm').onsubmit = async event => {
+        event.preventDefault();
+        const button = $('#createTeamInvite');
+        button.disabled = true;
+        $('#teamInviteError').textContent = '';
+        try {
+            const result = await api('/invites', {
+                method:'POST',
+                body:JSON.stringify({email:$('#teamInviteEmail').value,role:$('#teamInviteRole').value})
+            });
+            const inviteUrl = new URL(location.href);
+            inviteUrl.hash = new URLSearchParams({invite:result.invite_token}).toString();
+            $('#teamInviteLink').value = inviteUrl.toString();
+            $('#teamInviteMessage').textContent = `Invite for ${result.email} (${result.role}) expires ${new Date(result.expires_at).toLocaleString()}.`;
+            $('#teamInviteResult').hidden = false;
+            $('#teamInviteEmail').value = '';
+        } catch (error) {
+            $('#teamInviteError').textContent = error.message;
+        } finally {
+            button.disabled = false;
+        }
+    };
+    $('#copyTeamInvite').onclick = async () => {
+        const input = $('#teamInviteLink');
+        try {
+            await navigator.clipboard.writeText(input.value);
+            toast('Invite link copied');
+        } catch {
+            input.focus();
+            input.select();
+            input.setSelectionRange(0, input.value.length);
+            toast('Select the invite link and copy it');
+        }
+    };
+}
+
+function renderSidebar(){let counts={moving:0,stopped:0,offline:0};assets.forEach(a=>counts[a.status]++);$('#movingCount').textContent=counts.moving;$('#stoppedCount').textContent=counts.stopped;$('#offlineCount').textContent=counts.offline;let root=$('#items');if(view==='team'){if(!root.querySelector('#teamPanel'))renderTeam(root);return}if(view==='safety'){if(!root.querySelector('#safetyPanel'))renderSafety(root);return}if(view==='dispatch'){renderDispatch(root);return}if(view==='history'&&root.querySelector('#tripForm'))return;if(view==='assets'){let q=$('#search').value.toLowerCase();let list=assets.filter(a=>a.name.toLowerCase().includes(q));root.innerHTML=list.map(a=>`<div class="asset ${a.id===selectedAsset?'sel':''}" data-id="${a.id}"><i class="assetdot ${a.status}"></i><div class="assetinfo"><div class="assetname">${esc(a.name)}</div><div class="assetmeta">${esc(a.kind)} · ${a.recorded_at?new Date(a.recorded_at).toLocaleTimeString():'No GPS fix'}</div></div><span class="speed">${a.speed?Math.round(a.speed)+' km/h':''}</span></div>`).join('')||'<div class="empty">No assets match your search.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{selectedAsset=+el.dataset.id;let a=assets.find(x=>x.id===selectedAsset);if(a?.lat)map.flyTo({center:[a.lng,a.lat],zoom:14});renderSidebar()});return}if(view==='observations'){root.innerHTML=observations.map(o=>`<div class="asset" data-id="${o.id}"><i class="assetdot" style="background:#70a7ff"></i><div class="assetinfo"><div class="assetname">${esc(o.note||(o.kind==='mobile_dot_checkpoint'?'Temporary inspection checkpoint':'Observation pin'))}</div><div class="assetmeta">${esc(o.author)} · ${new Date(o.observed_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No observations yet. Right-click the map to add one.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{let o=observations.find(x=>x.id==el.dataset.id);map.flyTo({center:[o.lng,o.lat],zoom:15})});return}if(view==='alerts'){api('/alerts').then(rows=>{if(view!=='alerts')return;root.innerHTML=rows.map(a=>`<div class="asset"><i class="assetdot" style="background:#f2b95d"></i><div class="assetinfo"><div class="assetname">${esc(a.message)}</div><div class="assetmeta">${new Date(a.created_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No alerts. Geofence events will appear here.</div>'});return}root.innerHTML='<div class="empty">Select an asset to browse up to 30 days of trip history.</div>'}
 function pendingObservationQueue(){try{let value=JSON.parse(localStorage.getItem('dt_pending_observations')||'[]');if(!Array.isArray(value))return [];return value.filter(o=>o&&typeof o.client_id==='string'&&typeof o.note==='string'&&Number.isFinite(o.lat)&&o.lat>=-90&&o.lat<=90&&Number.isFinite(o.lng)&&o.lng>=-180&&o.lng<=180&&Number.isInteger(o.user_id)&&Number.isInteger(o.org_id)).slice(0,1000)}catch{return []}}
 function savePendingObservationQueue(queue){localStorage.setItem('dt_pending_observations',JSON.stringify(queue))}
 function initCheckpointLayer() {
@@ -838,4 +936,4 @@ async function connectLive() {
 
 let assetPoll = null;
 let observationPoll = null;
-async function start(){try{user=await api('/me');$('#userEmail').textContent=user.email;setLogin(false);initMap();await Promise.all([refreshAssets(),refreshObs()]);flushPendingObservations();syncSafety()?.catch(()=>{});connectLive();clearInterval(assetPoll);clearInterval(observationPoll);assetPoll=setInterval(refreshAssets,15000);observationPoll=setInterval(refreshObs,60000)}catch(e){setLogin(true)}}if(token)start();
+async function start(){try{user=await api('/me');$('#userEmail').textContent=user.email;$('#teamTab').hidden=user.role!=='admin';setLogin(false);initMap();await Promise.all([refreshAssets(),refreshObs()]);flushPendingObservations();syncSafety()?.catch(()=>{});connectLive();clearInterval(assetPoll);clearInterval(observationPoll);assetPoll=setInterval(refreshAssets,15000);observationPoll=setInterval(refreshObs,60000)}catch(e){setLogin(true)}}if(token&&!inviteToken)start();
