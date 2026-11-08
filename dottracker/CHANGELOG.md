@@ -1,5 +1,9 @@
 # Changelog
 
+## 3.1.1 — Map loads under the Content Security Policy
+
+- Fixed: in a browser, the map never finished loading, so nothing added after load appeared. That includes checkpoint symbols, the CDOT stations layer and inspection sites. MapLibre 6 starts a `blob:` module worker that imports its worker code from `https://unpkg.com/maplibre-gl@6.16.0/`, and the CSP's `worker-src` allowed only `blob:`. `worker-src` now also allows that exact MapLibre path, and a test checks the header.
+
 ## 3.1.0 — Non-permanent safety inspection stations
 
 - Added migration `0010-inspection-sites`: workspace-scoped inspection sites with an active window of up to 30 days. The API schema gate now requires it.
