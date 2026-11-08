@@ -1,6 +1,6 @@
 # dotTracker v3 · production-oriented MVP
 
-Development and release gates: see [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md) and the step-by-step [PRODUCTION_WORKFLOW.md](PRODUCTION_WORKFLOW.md). The API refuses to start unless all supported migrations through `0009-cdot-stations` are applied.
+Development and release gates: see [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md) and the step-by-step [PRODUCTION_WORKFLOW.md](PRODUCTION_WORKFLOW.md). The API refuses to start unless all supported migrations through `0010-inspection-sites` are applied.
 
 A pilot fleet-tracking application with a responsive MapLibre dashboard, FastAPI API, PostgreSQL/PostGIS schema, Argon2id password hashing, rotating opaque refresh sessions, org-scoped access, individual tracker credentials, short-lived one-use WebSocket tickets, duplicate-fix and observation idempotency, offline observation queueing, trip history, circle/polygon geofences, alerts, and observation pins.
 
@@ -47,7 +47,24 @@ API (any signed-in user; read-only):
 - `GET /api/v1/cdot/locate?lat=&lng=` returns `{milepoint, patrol, nearest_station}`. `milepoint` and `patrol` are `null` off the highway network.
 - `GET /api/v1/cdot/summary` returns the loaded datasets with row counts and load time.
 
-`GET /api/config` now also reports `"version": "3.0.0"`.
+`GET /api/config` also reports the app version (`"version": "3.1.0"`).
+
+## Non-permanent safety inspection stations (v3.1)
+
+Workspace admins can put a temporary inspection station on the map for a set window, up to 30 days. Typical examples are a State Patrol pull-off or a mobile FMCSA site. These are separate from the permanent CDOT ports of entry and from the 2-hour checkpoint pins any user can drop.
+
+1. Choose **Drop observation** (or right-click the map) and pick the spot.
+2. Set **Pin type** to **Non-permanent safety inspection station**. Only admins see this option.
+3. Enter the station name and agency. The highway and milepost are prefilled from the nearest CDOT milepoint when there is one within 2 km. Add a direction, start and end time, and notes, then choose **Add station**.
+
+Stations show as blue octagons, faded while scheduled, and the **⬢ Inspection sites** button shows or hides them. Select one, on the map or in the **Stations** tab, to see a popup with the station name, agency, highway and milepost, and the window it's active. Admins can **End now** (or **Cancel site** before it starts). A station leaves every map in the workspace when it ends. Changes reach other open maps through the live connection, and the list also refreshes every minute.
+
+API:
+
+- `GET /api/v1/inspection-sites`: active and scheduled sites in your workspace.
+- `POST /api/v1/inspection-sites` (admin): `{name, agency, lat, lng, highway?, milepost?, direction?, notes?, starts_at?, ends_at}`. Times need a timezone offset. `starts_at` defaults to now, and the window can be up to 30 days.
+- `POST /api/v1/inspection-sites/{id}/end` (admin).
+
 
 ## Replay a trip
 
@@ -67,7 +84,7 @@ The invited person opens the link, sets and confirms a password of at least 14 c
 
 Use the step-by-step [production development and release workflow](PRODUCTION_WORKFLOW.md) for database setup, migration, TLS ingress, staging acceptance, backup restore, release, and rollback.
 
-The production Compose profile expects an operator-provisioned PostgreSQL 17 + PostGIS 3.5 database, a private TLS reverse proxy or managed edge, and separate least-privilege runtime and migration credentials. New databases receive `sql/schema.sql` once; supported existing databases are upgraded by `migrate.py`. The API refuses to start until migrations 0002 through 0009 are recorded.
+The production Compose profile expects an operator-provisioned PostgreSQL 17 + PostGIS 3.5 database, a private TLS reverse proxy or managed edge, and separate least-privilege runtime and migration credentials. New databases receive `sql/schema.sql` once; supported existing databases are upgraded by `migrate.py`. The API refuses to start until migrations 0002 through 0010 are recorded.
 
 Production hosting, database credentials, TLS ingress, monitoring, and a verified backup restore are not configured in this repository. dotTracker is not production-verified until the staging gates in the workflow have passed.
 

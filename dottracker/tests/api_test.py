@@ -46,7 +46,7 @@ def test_schema_gate_requires_every_supported_migration():
 
 
 def test_demo_seed_is_hidden_in_production(client):
-    assert client.get('/api/config').json() == {'demo_seed_enabled': True, 'version': '3.0.0'}
+    assert client.get('/api/config').json() == {'demo_seed_enabled': True, 'version': '3.1.0'}
     assert demo_seed_enabled('development', 'true') is True
     assert demo_seed_enabled('development', 'false') is False
     assert demo_seed_enabled('production', 'true') is False
@@ -407,3 +407,55 @@ def test_cdot_stations_load_and_locate(client):
     assert off_highway['milepoint'] is None and off_highway['patrol'] is None
     assert off_highway['nearest_station']['name'] == 'Platteville Future Site'
     assert client.get('/api/v1/cdot/locate?lat=91&lng=0', headers=headers).status_code == 422
+
+
+def test_inspection_sites_are_admin_placed_org_scoped_and_expire(client):
+    admin_headers = login(client)
+    now = datetime.now(timezone.utc)
+    site = {'name': 'I-70 Silverthorne pull-off', 'agency': 'Colorado State Patrol', 'lat': 39.6303, 'lng': -106.0717,
+            'highway': 'I-70', 'milepost': 205.2, 'direction': 'WB', 'notes': 'Level 1 inspections',
+            'ends_at': (now + timedelta(hours=4)).isoformat()}
+    path = '/api/v1/inspection-sites'
+    assert client.post(path, json=site).status_code == 401
+    created = client.post(path, headers=admin_headers, json=site)
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body['status'] == 'active' and body['milepost'] == 205.2 and body['agency'] == 'Colorado State Patrol'
+
+    scheduled = client.post(path, headers=admin_headers, json={**site, 'name': 'Scheduled US-50 site', 'highway': None,
+        'milepost': None, 'starts_at': (now + timedelta(days=1)).isoformat(), 'ends_at': (now + timedelta(days=1, hours=6)).isoformat()})
+    assert scheduled.status_code == 201 and scheduled.json()['status'] == 'scheduled'
+
+    for bad, message in [
+        ({**site, 'ends_at': '2026-11-03T12:00:00'}, 'timezone'),
+        ({**site, 'starts_at': (now + timedelta(hours=5)).isoformat()}, 'after starts_at'),
+        ({**site, 'starts_at': (now - timedelta(days=2)).isoformat(), 'ends_at': (now - timedelta(days=1)).isoformat()}, 'future'),
+        ({**site, 'ends_at': (now + timedelta(days=31)).isoformat()}, '30 days'),
+    ]:
+        rejected = client.post(path, headers=admin_headers, json=bad)
+        assert rejected.status_code == 422 and message in rejected.text, rejected.text
+    assert client.post(path, headers=admin_headers, json={**site, 'name': ''}).status_code == 422
+
+    listed = {row['name']: row for row in client.get(path, headers=admin_headers).json()}
+    assert {'I-70 Silverthorne pull-off', 'Scheduled US-50 site'} <= set(listed)
+
+    # Viewers in the same workspace see sites but cannot place or end them; other workspaces see nothing.
+    invite = client.post('/api/invites', headers=admin_headers, json={'email': 'site-viewer@test.invalid', 'role': 'viewer'}).json()
+    accepted = client.post('/api/invites/accept', json={'token': invite['invite_token'], 'password': 'site-viewer-password-long'})
+    assert accepted.status_code == 201, accepted.text
+    viewer = login(client, 'site-viewer@test.invalid', 'site-viewer-password-long')
+    assert any(row['id'] == body['id'] for row in client.get(path, headers=viewer).json())
+    assert client.post(path, headers=viewer, json=site).status_code == 403
+    assert client.post(f"{path}/{body['id']}/end", headers=viewer).status_code == 403
+    outsider = login(client, 'viewer-isolation@test.invalid', 'test-viewer-password-long')
+    assert all(row['id'] != body['id'] for row in client.get(path, headers=outsider).json())
+
+    ended = client.post(f"{path}/{body['id']}/end", headers=admin_headers)
+    assert ended.status_code == 200 and ended.json() == {'id': body['id'], 'ended': True}
+    assert client.post(f"{path}/{body['id']}/end", headers=admin_headers).status_code == 404
+    assert all(row['id'] != body['id'] for row in client.get(path, headers=admin_headers).json())
+
+    with psycopg.connect(os.environ['DATABASE_URL']) as conn:
+        conn.execute("UPDATE inspection_sites SET starts_at=now()-interval '2 hours', ends_at=now()-interval '1 minute' WHERE id=%s",
+                     (scheduled.json()['id'],))
+    assert all(row['id'] != scheduled.json()['id'] for row in client.get(path, headers=admin_headers).json())

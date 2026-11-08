@@ -1,7 +1,7 @@
 import * as maplibregl from 'https://unpkg.com/maplibre-gl@6.16.0/dist/maplibre-gl.mjs';
 const API='/api';let token=localStorage.getItem('dt_token'),refreshToken=localStorage.getItem('dt_refresh'),refreshPromise=null,user=null,map=null,assets=[],observations=[],selectedAsset=null,view='assets',assetsVisible=true,obsVisible=true,pendingPoint=null,observationCapturedAt=null,markers=new Map(),obsMarkers=[],ws=null;
 const $=s=>document.querySelector(s);const inviteToken = new URLSearchParams(location.hash.slice(1)).get('invite');function authHeaders(){return {'Authorization':'Bearer '+token,'Content-Type':'application/json'}}async function renewSession(){if(refreshPromise)return refreshPromise;refreshPromise=(async()=>{let r=await fetch(API+'/auth/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:refreshToken})});if(!r.ok)throw Error('Session expired');let d=await r.json();token=d.access_token;refreshToken=d.refresh_token;localStorage.setItem('dt_token',token);localStorage.setItem('dt_refresh',refreshToken)})().finally(()=>{refreshPromise=null});return refreshPromise}async function api(path,opts={},retried=false){let r=await fetch(API+path,{...opts,headers:{...authHeaders(),...(opts.headers||{})}});if(r.status===401){if(!retried&&refreshToken&&!path.includes('/auth/')){try{await renewSession();return api(path,opts,true)}catch{}}logout();throw Error('Session expired')}if(!r.ok){let e=await r.json().catch(()=>({detail:'Request failed'}));throw Error(e.detail||'Request failed')}return r.status===204?null:r.json()}
-function toast(msg){let t=$('#toast');t.textContent=msg;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}function setLogin(on){$('#login').style.display=on?'grid':'none'}function logout(){cancelFenceDrawing();clearTrip();setPinMode(false);closeModal();let oldRefresh=refreshToken;if(oldRefresh)fetch(API+'/auth/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:oldRefresh})}).catch(()=>{});localStorage.removeItem('dt_token');localStorage.removeItem('dt_refresh');token=null;refreshToken=null;user=null;observations=[];cdotStations=[];cdotLoaded=null;map?.getSource('cdot-stations')?.setData(cdotFeatures());obsMarkers.forEach(marker=>marker.remove());obsMarkers=[];map?.getSource('checkpoints')?.setData(checkpointFeatures());view='assets';$('#items').replaceChildren();document.querySelectorAll('.tab').forEach(tab=>tab.classList.toggle('active',tab.dataset.view===view));setLogin(true);stopLive();setLiveState('offline','Disconnected');clearInterval(assetPoll);clearInterval(observationPoll)}
+function toast(msg){let t=$('#toast');t.textContent=msg;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}function setLogin(on){$('#login').style.display=on?'grid':'none'}function logout(){cancelFenceDrawing();clearTrip();setPinMode(false);closeModal();let oldRefresh=refreshToken;if(oldRefresh)fetch(API+'/auth/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:oldRefresh})}).catch(()=>{});localStorage.removeItem('dt_token');localStorage.removeItem('dt_refresh');token=null;refreshToken=null;user=null;observations=[];cdotStations=[];cdotLoaded=null;map?.getSource('cdot-stations')?.setData(cdotFeatures());obsMarkers.forEach(marker=>marker.remove());obsMarkers=[];map?.getSource('checkpoints')?.setData(checkpointFeatures());view='assets';$('#items').replaceChildren();document.querySelectorAll('.tab').forEach(tab=>tab.classList.toggle('active',tab.dataset.view===view));setLogin(true);stopLive();setLiveState('offline','Disconnected');clearInterval(assetPoll);clearInterval(observationPoll);clearInterval(inspectionPoll);inspectionSites=[];map?.getSource('inspection-sites')?.setData(inspectionFeatures())}
 async function signIn(){try{let data=await fetch(API+'/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('#email').value,password:$('#password').value})}).then(async r=>{let d=await r.json();if(!r.ok)throw Error(d.detail||'Sign in failed');return d});token=data.access_token;refreshToken=data.refresh_token;localStorage.setItem('dt_token',token);localStorage.setItem('dt_refresh',refreshToken);start()}catch(e){$('#loginError').textContent=e.message}}
 $('#loginBtn').onclick=signIn;$('#password').onkeydown=e=>{if(e.key==='Enter')signIn()};
 async function configureDemoControls(){
@@ -78,7 +78,7 @@ $('#inviteBack').onclick = () => {
         start();
     }
 };
-function initMap(){if(map)return;map=new maplibregl.Map({container:'map',style:'https://tiles.openfreemap.org/styles/dark',center:[-104.99,39.739],zoom:11});map.addControl(new maplibregl.NavigationControl(),'top-right');map.on('load',()=>{initCheckpointLayer();initCdotLayer();refreshAssets();refreshObs()});map.on('contextmenu', e => {if (!fenceDraft) openObservation([e.lngLat.lng, e.lngLat.lat])});map.on('click', e => {
+function initMap(){if(map)return;map=new maplibregl.Map({container:'map',style:'https://tiles.openfreemap.org/styles/dark',center:[-104.99,39.739],zoom:11});map.addControl(new maplibregl.NavigationControl(),'top-right');map.on('load',()=>{initCheckpointLayer();initCdotLayer();initInspectionLayer();refreshAssets();refreshObs()});map.on('contextmenu', e => {if (!fenceDraft) openObservation([e.lngLat.lng, e.lngLat.lat])});map.on('click', e => {
     if (fenceDraft) {
         addFenceCorner(e.lngLat.wrap());
         return;
@@ -282,7 +282,7 @@ function openObservation(point){
     observationCapturedAt = new Date().toISOString();
     $('#modalSave').onclick = saveObservation;
     $('#modalSave').textContent = 'Save';
-    $('#modalTitle').textContent='Drop an observation';$('#modalSub').textContent=`${point[1].toFixed(5)}, ${point[0].toFixed(5)} · ${new Date(observationCapturedAt).toLocaleString()}`;$('#modalFields').innerHTML=`<label class="field">Pin type<select id="obsKind"><option value="observation">Observation</option><option value="mobile_dot_checkpoint">Temporary inspection checkpoint (2 hours)</option></select></label><label class="field">Note<textarea id="obsNote" maxlength="2000" placeholder="What did you observe?"></textarea></label><label class="field">Related asset (optional)<select id="obsAsset"><option value="">No asset linked</option>${assets.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></label>`;$('#modalback').style.display='grid';setTimeout(()=>$('#obsNote')?.focus(),50)}function closeModal(){$('#modalback').style.display='none'}$('#modalClose').onclick=$('#modalCancel').onclick=closeModal;$('#modalSave').onclick=async()=>{let item={client_id:crypto.randomUUID(),lat:pendingPoint[1],lng:pendingPoint[0],note:$('#obsNote').value,kind:$('#obsKind').value,asset_id:$('#obsAsset').value?+$('#obsAsset').value:null,observed_at:observationCapturedAt,user_id:user.id,org_id:user.org_id};
+    $('#modalTitle').textContent='Drop an observation';$('#modalSub').textContent=`${point[1].toFixed(5)}, ${point[0].toFixed(5)} · ${new Date(observationCapturedAt).toLocaleString()}`;$('#modalFields').innerHTML=`<label class="field">Pin type<select id="obsKind"><option value="observation">Observation</option><option value="mobile_dot_checkpoint">Temporary inspection checkpoint (2 hours)</option>${user.role==='admin'?'<option value="inspection_site">Non-permanent safety inspection station</option>':''}</select></label><label class="field">Note<textarea id="obsNote" maxlength="2000" placeholder="What did you observe?"></textarea></label><label class="field">Related asset (optional)<select id="obsAsset"><option value="">No asset linked</option>${assets.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></label>`;$('#modalback').style.display='grid';$('#obsKind').onchange=e=>{if(e.target.value==='inspection_site')openInspectionSite(point)};setTimeout(()=>$('#obsNote')?.focus(),50)}function closeModal(){$('#modalback').style.display='none'}$('#modalClose').onclick=$('#modalCancel').onclick=closeModal;$('#modalSave').onclick=async()=>{let item={client_id:crypto.randomUUID(),lat:pendingPoint[1],lng:pendingPoint[0],note:$('#obsNote').value,kind:$('#obsKind').value,asset_id:$('#obsAsset').value?+$('#obsAsset').value:null,observed_at:observationCapturedAt,user_id:user.id,org_id:user.org_id};
 if(item.kind==='mobile_dot_checkpoint'){
     try{
         const queue=pendingObservationQueue();
@@ -915,6 +915,7 @@ async function connectLive() {
             const message = JSON.parse(event.data);
             if (message.type === 'position') refreshAssets();
             if (message.type === 'checkpoint_created' || message.type === 'sync_ready') refreshObs();
+            if (message.type === 'inspection_site_changed' || message.type === 'sync_ready') refreshInspectionSites();
             if (message.type === 'sync_ready' || message.type === 'route_updated') {
                 const asset = $('#dispatchAsset');
                 if (!dispatchSync && view === 'dispatch' && asset?.value &&
@@ -1037,8 +1038,12 @@ function renderStations(root) {
         ? `<div class="asset" id="cdotLocate"><i class="assetdot" style="background:#ff9f43"></i><div class="assetinfo"><div class="assetname">Locate ${esc(asset.name)} on CDOT highways</div><div class="assetmeta">${lookup?.pending ? 'Looking up milepoint…' : 'Milepoint, maintenance patrol and nearest port of entry'}</div>${lookup?.result ? describeCdotLookup(lookup.result) : ''}</div></div>`
         : '<div class="empty">Select an asset with a GPS fix to find its highway milepoint and patrol.</div>';
     const list = cdotStations.map(station => `<div class="asset" data-cdot="${esc(station.id)}"><i class="assetdot" style="background:${station.status === 'planned' ? '#9aa9b8' : '#ff9f43'}"></i><div class="assetinfo"><div class="assetname">${esc(cdotStationLabel(station))}</div><div class="assetmeta">${esc(station.highway)} MP ${esc(station.milepost)} · ${station.status === 'planned' ? 'Planned' : esc(station.phone || 'Open')}</div></div></div>`).join('');
-    root.innerHTML = locate + (list || `<div class="empty">${cdotLoaded ? 'No CDOT stations loaded. Run the cdot-stations loader.' : 'Loading CDOT stations…'}</div>`);
+    root.innerHTML = inspectionSitesSection() + locate + (list || `<div class="empty">${cdotLoaded ? 'No CDOT stations loaded. Run the cdot-stations loader.' : 'Loading CDOT stations…'}</div>`);
     root.querySelector('#cdotLocate')?.addEventListener('click', () => locateAssetOnHighway(asset));
+    root.querySelectorAll('[data-site]').forEach(el => el.onclick = () => {
+        const site = inspectionSites.find(item => String(item.id) === el.dataset.site);
+        if (site) { map.flyTo({center:[site.lng, site.lat], zoom:13}); openInspectionPopup(site); }
+    });
     root.querySelectorAll('[data-cdot]').forEach(el => el.onclick = () => {
         const station = cdotStations.find(item => String(item.id) === el.dataset.cdot);
         if (!station) return;
@@ -1047,4 +1052,202 @@ function renderStations(root) {
     });
     if (!cdotLoaded) loadCdotStations().then(() => { if (view === 'stations') renderSidebar(); }).catch(error => toast(`CDOT stations unavailable: ${error.message}`));
 }
-async function start(){try{user=await api('/me');$('#userEmail').textContent=user.email;$('#teamTab').hidden=user.role!=='admin';setLogin(false);initMap();await Promise.all([refreshAssets(),refreshObs()]);flushPendingObservations();syncSafety()?.catch(()=>{});connectLive();clearInterval(assetPoll);clearInterval(observationPoll);assetPoll=setInterval(refreshAssets,15000);observationPoll=setInterval(refreshObs,60000)}catch(e){setLogin(true)}}if(token&&!inviteToken)start();
+// --- v3.1: non-permanent safety inspection stations ---
+let inspectionSites = [], inspectionVisible = true, inspectionPoll = null, inspectionPopup = null;
+
+function liveInspectionSites() {
+    const now = Date.now();
+    return inspectionSites.filter(site => Date.parse(site.ends_at) > now)
+        .map(site => ({...site, status: Date.parse(site.starts_at) > now ? 'scheduled' : 'active'}));
+}
+
+function inspectionFeatures() {
+    return {
+        type:'FeatureCollection',
+        features:liveInspectionSites().map(site => ({
+            type:'Feature',
+            geometry:{type:'Point', coordinates:[site.lng, site.lat]},
+            properties:{id:String(site.id), status:site.status}
+        }))
+    };
+}
+
+function initInspectionLayer() {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 48;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    // Octagon badge, deliberately unlike the triangular 2-hour checkpoint pin.
+    ctx.beginPath();
+    for (let i = 0; i < 8; i++) {
+        const angle = Math.PI / 8 + i * Math.PI / 4;
+        const x = 24 + 20 * Math.cos(angle), y = 24 + 20 * Math.sin(angle);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.fillStyle = '#5aa9ff';
+    ctx.fill();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = '#06121f';
+    ctx.stroke();
+    ctx.fillStyle = '#06121f';
+    ctx.fillRect(14, 17, 20, 4);
+    ctx.fillRect(14, 27, 20, 4);
+    map.addImage('inspection-site', ctx.getImageData(0, 0, 48, 48), {pixelRatio:2});
+    map.addSource('inspection-sites', {type:'geojson', data:inspectionFeatures()});
+    map.addLayer({
+        id:'inspection-site-symbols', type:'symbol', source:'inspection-sites',
+        layout:{'icon-image':'inspection-site', 'icon-allow-overlap':true, visibility:inspectionVisible ? 'visible' : 'none'},
+        paint:{'icon-opacity':['case', ['==', ['get', 'status'], 'scheduled'], 0.55, 1]}
+    });
+    map.on('click', 'inspection-site-symbols', e => {
+        if (pinMode || fenceDraft) return;
+        const site = liveInspectionSites().find(item => String(item.id) === e.features?.[0]?.properties.id);
+        if (site) openInspectionPopup(site);
+    });
+    map.on('mouseenter', 'inspection-site-symbols', () => { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', 'inspection-site-symbols', () => { map.getCanvas().style.cursor = ''; });
+}
+
+async function refreshInspectionSites() {
+    if (!token) return;
+    try {
+        inspectionSites = await api('/v1/inspection-sites');
+    } catch {
+        return;
+    }
+    map?.getSource('inspection-sites')?.setData(inspectionFeatures());
+    if (view === 'stations') renderSidebar();
+}
+
+function formatWhen(iso) {
+    const when = new Date(iso);
+    const sameDay = when.toDateString() === new Date().toDateString();
+    return sameDay
+        ? when.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'})
+        : when.toLocaleString([], {month:'short', day:'numeric', hour:'numeric', minute:'2-digit'});
+}
+
+function inspectionWindow(site) {
+    return site.status === 'scheduled'
+        ? `Scheduled · ${formatWhen(site.starts_at)} – ${formatWhen(site.ends_at)}`
+        : `Active until ${formatWhen(site.ends_at)}`;
+}
+
+function inspectionLocation(site) {
+    const parts = [site.highway, site.milepost != null ? `MP ${site.milepost}` : null, site.direction].filter(Boolean);
+    return parts.join(' · ');
+}
+
+function openInspectionPopup(site) {
+    const live = liveInspectionSites().find(item => item.id === site.id) || site;
+    const el = document.createElement('div');
+    el.className = 'obs-popup';
+    const line = (text, tag = 'div') => { const node = document.createElement(tag); node.textContent = text; el.append(node); return node; };
+    line(live.name, 'b');
+    line('Non-permanent safety inspection station');
+    line(live.agency);
+    if (inspectionLocation(live)) line(inspectionLocation(live));
+    line(inspectionWindow(live));
+    if (live.notes) line(live.notes);
+    if (user?.role === 'admin') {
+        const end = document.createElement('button');
+        end.className = 'btn';
+        end.style.marginTop = '8px';
+        end.textContent = live.status === 'scheduled' ? 'Cancel site' : 'End now';
+        end.onclick = async () => {
+            if (!confirm(`Take "${live.name}" off the map for your whole workspace?`)) return;
+            end.disabled = true;
+            try {
+                await api(`/v1/inspection-sites/${live.id}/end`, {method:'POST'});
+                inspectionPopup?.remove();
+                toast('Inspection site ended');
+                await refreshInspectionSites();
+            } catch (error) {
+                end.disabled = false;
+                toast(error.message);
+            }
+        };
+        el.append(end);
+    }
+    inspectionPopup?.remove();
+    inspectionPopup = new maplibregl.Popup({offset:14}).setLngLat([live.lng, live.lat]).setDOMContent(el).addTo(map);
+}
+
+function setInspectionVisible(visible) {
+    inspectionVisible = visible;
+    $('#layerSites').classList.toggle('active', visible);
+    $('#layerSites').setAttribute('aria-pressed', String(visible));
+    if (map?.getLayer('inspection-site-symbols')) map.setLayoutProperty('inspection-site-symbols', 'visibility', visible ? 'visible' : 'none');
+}
+$('#layerSites').onclick = () => setInspectionVisible(!inspectionVisible);
+
+function inspectionSitesSection() {
+    const sites = liveInspectionSites();
+    if (!sites.length) return user?.role === 'admin'
+        ? '<div class="empty">No inspection sites up. Choose Drop observation, click the map, and pick "Non-permanent safety inspection station".</div>'
+        : '';
+    return sites.map(site => `<div class="asset" data-site="${esc(site.id)}"><i class="assetdot" style="background:#5aa9ff;opacity:${site.status === 'scheduled' ? 0.55 : 1}"></i><div class="assetinfo"><div class="assetname">${esc(site.name)}</div><div class="assetmeta">${esc(site.agency)}${inspectionLocation(site) ? ' · ' + esc(inspectionLocation(site)) : ''}</div><div class="assetmeta">${esc(inspectionWindow(site))}</div></div></div>`).join('');
+}
+
+function localInputValue(date) {
+    const pad = n => String(n).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function openInspectionSite(point) {
+    if (user?.role !== 'admin') return;
+    pendingPoint = point;
+    const start = new Date();
+    const end = new Date(start.getTime() + 4 * 3600000);
+    $('#modalTitle').textContent = 'Add a non-permanent inspection station';
+    $('#modalSub').textContent = `${point[1].toFixed(5)}, ${point[0].toFixed(5)} · visible to everyone in your workspace until it ends`;
+    $('#modalFields').innerHTML = `<label class="field">Station name<input id="siteName" maxlength="120" placeholder="e.g. I-70 Silverthorne pull-off"></label>
+<label class="field">Agency<input id="siteAgency" maxlength="80" list="siteAgencies" placeholder="Who runs it"><datalist id="siteAgencies"><option value="Colorado State Patrol"><option value="CDOT Port of Entry"><option value="FMCSA"></datalist></label>
+<label class="field">Highway<input id="siteHighway" maxlength="40" placeholder="Looking up…"></label>
+<label class="field">Milepost<input id="siteMilepost" type="number" min="0" max="9999" step="0.1"></label>
+<label class="field">Direction<select id="siteDirection"><option value="">Not set</option><option>NB</option><option>SB</option><option>EB</option><option>WB</option><option>Both</option></select></label>
+<label class="field">Starts<input id="siteStarts" type="datetime-local" value="${localInputValue(start)}"></label>
+<label class="field">Ends<input id="siteEnds" type="datetime-local" value="${localInputValue(end)}"></label>
+<label class="field">Notes<textarea id="siteNotes" maxlength="1000" placeholder="Pull-off details, inspection level, contact"></textarea></label>`;
+    $('#modalSave').textContent = 'Add station';
+    $('#modalSave').onclick = saveInspectionSite;
+    $('#modalback').style.display = 'grid';
+    setTimeout(() => $('#siteName')?.focus(), 50);
+    api(`/v1/cdot/locate?lat=${encodeURIComponent(point[1])}&lng=${encodeURIComponent(point[0])}`).then(result => {
+        const highway = $('#siteHighway'), milepost = $('#siteMilepost');
+        if (!highway || pendingPoint !== point) return;
+        highway.placeholder = 'e.g. I-70';
+        if (result.milepoint && !highway.value) highway.value = `Route ${result.milepoint.route}`;
+        if (result.milepoint && !milepost.value) milepost.value = result.milepoint.refpt;
+    }).catch(() => { const highway = $('#siteHighway'); if (highway) highway.placeholder = 'e.g. I-70'; });
+}
+
+async function saveInspectionSite() {
+    const name = $('#siteName').value.trim(), agency = $('#siteAgency').value.trim();
+    if (!name || !agency) { toast('Add a station name and agency'); return; }
+    const starts = new Date($('#siteStarts').value), ends = new Date($('#siteEnds').value);
+    if (Number.isNaN(starts.getTime()) || Number.isNaN(ends.getTime())) { toast('Set when the station starts and ends'); return; }
+    const milepost = $('#siteMilepost').value;
+    const body = {
+        name, agency, lat:pendingPoint[1], lng:pendingPoint[0],
+        highway:$('#siteHighway').value.trim() || null,
+        milepost:milepost === '' ? null : Number(milepost),
+        direction:$('#siteDirection').value || null,
+        notes:$('#siteNotes').value,
+        starts_at:starts.toISOString(), ends_at:ends.toISOString()
+    };
+    $('#modalSave').disabled = true;
+    try {
+        await api('/v1/inspection-sites', {method:'POST', body:JSON.stringify(body)});
+        closeModal();
+        toast('Inspection station added for your workspace');
+        if (!inspectionVisible) setInspectionVisible(true);
+        await refreshInspectionSites();
+    } catch (error) {
+        toast(error.message);
+    } finally {
+        $('#modalSave').disabled = false;
+    }
+}
+async function start(){try{user=await api('/me');$('#userEmail').textContent=user.email;$('#teamTab').hidden=user.role!=='admin';setLogin(false);initMap();await Promise.all([refreshAssets(),refreshObs(),refreshInspectionSites()]);flushPendingObservations();syncSafety()?.catch(()=>{});connectLive();clearInterval(assetPoll);clearInterval(observationPoll);assetPoll=setInterval(refreshAssets,15000);observationPoll=setInterval(refreshObs,60000);clearInterval(inspectionPoll);inspectionPoll=setInterval(refreshInspectionSites,60000)}catch(e){setLogin(true)}}if(token&&!inviteToken)start();
