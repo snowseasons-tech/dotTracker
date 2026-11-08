@@ -114,6 +114,8 @@ The production compose profile runs as a non-root user, drops Linux capabilities
 - `POST /api/live-ticket`, `WS /api/live` (one-use ticket via subprotocol)
 - `GET /health` (database readiness), `GET /health/live` (process liveness)
 
+Circle geometry: `{ "lat": 39.7, "lng": -105.0, "radius_m": 400 }`. Polygon geometry uses `[longitude, latitude]` pairs: `{ "coordinates": [[-105,39],[-104,39],[-104,40]] }`.
+
 ## Verification
 
 Run the checks from this directory with a disposable PostgreSQL 17 + PostGIS 3.5 database:
