@@ -38,6 +38,7 @@ SUPPORTED_SCHEMA_VERSIONS=frozenset({
     '0006-checkpoint-spatial',
     '0007-geofence-spatial',
     '0008-safety-checklists',
+    '0009-cdot-stations',
 })
 
 def missing_schema_versions(applied_versions):
@@ -76,7 +77,8 @@ async def lifespan(app):
             await asyncio.sleep(1)
     else: raise RuntimeError('Database unavailable')
     yield
-app=FastAPI(title='dotTracker API', version='0.2.0', lifespan=lifespan,
+APP_VERSION='3.0.0'
+app=FastAPI(title='dotTracker API', version=APP_VERSION, lifespan=lifespan,
             docs_url=None if IS_PRODUCTION else '/docs', redoc_url=None if IS_PRODUCTION else '/redoc',
             openapi_url=None if IS_PRODUCTION else '/openapi.json')
 app.mount('/static',StaticFiles(directory=str(Path(__file__).parent/'static')),name='static')
@@ -463,6 +465,47 @@ def checkpoints(west: float = Query(ge=-180, le=180), south: float = Query(ge=-9
         ORDER BY observed_at DESC LIMIT 2000""", (u['org_id'], west, south, east, north)).fetchall()
 
 
+# --- v3: CDOT stations (shared public reference data, read-only for every signed-in user) ---
+CDOT_STATION_COLUMNS = ('id, kind, name, highway, route, milepost::float AS milepost, direction, phone, status, lat, lng')
+MILEPOINT_SEARCH_METERS = 2000
+
+
+@app.get('/api/v1/cdot/stations')
+def cdot_stations(status: Optional[Literal['open', 'planned']] = None, c=Depends(db), u=Depends(current_user)):
+    return c.execute(f"""SELECT {CDOT_STATION_COLUMNS} FROM cdot_stations
+        WHERE (%(status)s::text IS NULL OR status=%(status)s) ORDER BY name, direction""",
+        {'status': status}).fetchall()
+
+
+@app.get('/api/v1/cdot/summary')
+def cdot_summary(c=Depends(db), u=Depends(current_user)):
+    datasets = c.execute('SELECT name, row_count, loaded_at FROM cdot_datasets ORDER BY name').fetchall()
+    return {'loaded': bool(datasets), 'datasets': datasets}
+
+
+@app.get('/api/v1/cdot/locate')
+def cdot_locate(lat: float = Query(ge=-90, le=90, allow_inf_nan=False), lng: float = Query(ge=-180, le=180, allow_inf_nan=False),
+                c=Depends(db), u=Depends(current_user)):
+    """Nearest highway milepoint (within 2 km), its maintenance patrol, and the nearest port of entry."""
+    here = {'lat': lat, 'lng': lng, 'radius': MILEPOINT_SEARCH_METERS}
+    milepoint = c.execute("""WITH here AS (SELECT ST_SetSRID(ST_MakePoint(%(lng)s, %(lat)s), 4326) AS g)
+        SELECT m.route, m.refpt::float AS refpt,
+               round(ST_Distance(m.geom::geography, here.g::geography))::int AS distance_m
+        FROM cdot_milepoints m, here
+        WHERE ST_DWithin(m.geom::geography, here.g::geography, %(radius)s)
+        ORDER BY m.geom <-> here.g LIMIT 1""", here).fetchone()
+    patrol = None
+    if milepoint:
+        patrol = c.execute("""SELECT route, region, begin_refpt::float AS begin_refpt, end_refpt::float AS end_refpt,
+                   maintenance_section, patrol, supervisor_area
+            FROM cdot_patrols WHERE route=%s AND %s BETWEEN begin_refpt AND end_refpt
+            ORDER BY end_refpt - begin_refpt LIMIT 1""", (milepoint['route'], milepoint['refpt'])).fetchone()
+    station = c.execute(f"""WITH here AS (SELECT ST_SetSRID(ST_MakePoint(%(lng)s, %(lat)s), 4326) AS g)
+        SELECT {CDOT_STATION_COLUMNS}, round(ST_Distance(s.geom::geography, here.g::geography))::int AS distance_m
+        FROM cdot_stations s, here ORDER BY s.geom <-> here.g LIMIT 1""", here).fetchone()
+    return {'milepoint': milepoint, 'patrol': patrol, 'nearest_station': station}
+
+
 @app.get('/api/observations')
 def observations(c=Depends(db),u=Depends(current_user),asset_id:Optional[int]=Query(default=None,gt=0),from_:Optional[datetime]=Query(None,alias='from'),to:Optional[datetime]=None):
     if from_: from_=require_aware(from_,'from')
@@ -589,7 +632,7 @@ def demo_seed_enabled(app_env=APP_ENV, setting=None):
 
 @app.get('/api/config')
 def client_config():
-    return {'demo_seed_enabled': demo_seed_enabled()}
+    return {'demo_seed_enabled': demo_seed_enabled(), 'version': APP_VERSION}
 
 @app.post('/api/dev/seed')
 def seed(c=Depends(db)):

@@ -1,4 +1,10 @@
 # Local development only. Production uses docker-compose.production.yml with managed Postgres and TLS termination.
+# Start order: db (PostgreSQL 17 + PostGIS) -> migrate -> cdot-stations (reference data loader) -> api.
+x-dottracker-image: &dottracker-image
+  build: .
+  image: dottracker:3.0.0
+  env_file: .env
+
 services:
   db:
     image: postgis/postgis:17-3.5
@@ -15,13 +21,25 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
-  api:
-    build: .
-    env_file: .env
-    ports: ["127.0.0.1:8000:8000"]
-    command: ["sh", "-c", "python migrate.py && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips 127.0.0.1"]
+  migrate:
+    <<: *dottracker-image
+    command: ["python", "migrate.py"]
     depends_on:
       db: {condition: service_healthy}
+    restart: "no"
+  cdot-stations:
+    <<: *dottracker-image
+    command: ["python", "scripts/load_cdot_stations.py", "--data-dir", "/data"]
+    volumes: ["../data:/data:ro"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    restart: "no"
+  api:
+    <<: *dottracker-image
+    ports: ["127.0.0.1:8000:8000"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips", "127.0.0.1"]
+    depends_on:
+      cdot-stations: {condition: service_completed_successfully}
     volumes: ["./app:/app/app:ro"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]

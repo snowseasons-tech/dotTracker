@@ -46,7 +46,7 @@ def test_schema_gate_requires_every_supported_migration():
 
 
 def test_demo_seed_is_hidden_in_production(client):
-    assert client.get('/api/config').json() == {'demo_seed_enabled': True}
+    assert client.get('/api/config').json() == {'demo_seed_enabled': True, 'version': '3.0.0'}
     assert demo_seed_enabled('development', 'true') is True
     assert demo_seed_enabled('development', 'false') is False
     assert demo_seed_enabled('production', 'true') is False
@@ -353,3 +353,57 @@ def test_safety_submission_replay_and_review(client):
     assert len(rows) == 1
     assert rows[0]['answers'] == submission['answers']
     assert datetime.fromisoformat(rows[0]['completed_at']) == datetime.fromisoformat(submission['completed_at'])
+
+
+def test_cdot_stations_load_and_locate(client):
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        'load_cdot_stations', Path(__file__).resolve().parents[1] / 'scripts' / 'load_cdot_stations.py')
+    loader = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(loader)
+    stations = loader.parse_stations([
+        {'OBJECTID': '14', 'Y-LAT': '39.10055', 'X-LONG': '-104.863961', 'Highway Number': '25', 'Port Name': 'Monument',
+         'Direction': 'NB', 'Phone': '719-481-2281', 'Highway': 'I-25', 'Mile Post': '161.2'},
+        {'OBJECTID': '1', 'Y-LAT': '40.193154', 'X-LONG': '-104.820824', 'Highway Number': '85',
+         'Port Name': 'Platteville Future SIte', 'Direction': 'Center', 'Phone': 'Not Open Yet', 'Highway': 'US-85', 'Mile Post': '249.6'},
+    ])
+    milepoints = loader.parse_milepoints([{'OBJECTID': '1', 'ROUTE': '025A', 'REFPT': '161', 'X': '511764.03', 'Y': '4327942.93'}])
+    patrols = loader.parse_patrols([{'OBJECTID': '1', 'ROUTE': '025A', 'region': '2', 'refpt': '155', 'endrefpt': '170.5',
+                                     'Cost_Center': '4102', 'Maintenance_Section': '4', 'Maintenance_Patrol': '19',
+                                     'SUPERVISOR_AREA': 'John'}])
+    datasets = [loader.Dataset('stations', 'stations.csv', 'a' * 64, stations),
+                loader.Dataset('milepoints', 'milepoints.csv', 'b' * 64, milepoints),
+                loader.Dataset('patrols', 'patrols.csv', 'c' * 64, patrols)]
+    with psycopg.connect(os.environ['DATABASE_URL']) as conn:
+        assert loader.load(conn, datasets) == {'stations': 2, 'milepoints': 1, 'patrols': 1}
+        # A second run replaces rather than duplicates the reference data.
+        assert loader.load(conn, datasets) == {'stations': 2, 'milepoints': 1, 'patrols': 1}
+        assert conn.execute('SELECT count(*) FROM cdot_stations').fetchone()[0] == 2
+
+    assert client.get('/api/v1/cdot/stations').status_code == 401
+    headers = login(client)
+    listed = client.get('/api/v1/cdot/stations', headers=headers)
+    assert listed.status_code == 200
+    assert [(row['name'], row['status']) for row in listed.json()] == [('Monument', 'open'), ('Platteville Future Site', 'planned')]
+    planned = client.get('/api/v1/cdot/stations?status=planned', headers=headers).json()
+    assert [row['id'] for row in planned] == [1]
+    assert client.get('/api/v1/cdot/stations?status=closed', headers=headers).status_code == 422
+
+    summary = client.get('/api/v1/cdot/summary', headers=headers).json()
+    assert summary['loaded'] is True
+    assert {row['name']: row['row_count'] for row in summary['datasets']} == {'milepoints': 1, 'patrols': 1, 'stations': 2}
+
+    located = client.get('/api/v1/cdot/locate?lat=39.10056&lng=-104.86396', headers=headers)
+    assert located.status_code == 200, located.text
+    body = located.json()
+    assert body['milepoint']['route'] == '025A' and body['milepoint']['refpt'] == 161
+    assert body['milepoint']['distance_m'] < 25
+    assert body['patrol']['patrol'] == 19 and body['patrol']['supervisor_area'] == 'John'
+    assert body['nearest_station']['name'] == 'Monument' and body['nearest_station']['distance_m'] < 25
+
+    off_highway = client.get('/api/v1/cdot/locate?lat=39.7392&lng=-104.9903', headers=headers).json()
+    assert off_highway['milepoint'] is None and off_highway['patrol'] is None
+    assert off_highway['nearest_station']['name'] == 'Platteville Future Site'
+    assert client.get('/api/v1/cdot/locate?lat=91&lng=0', headers=headers).status_code == 422
