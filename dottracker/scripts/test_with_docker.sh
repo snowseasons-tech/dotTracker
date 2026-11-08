@@ -36,6 +36,10 @@ services:
         source: ${DOTTRACKER_TEST_SOURCE:?}
         target: /src
         read_only: true
+      - type: bind
+        source: ${DOTTRACKER_DATA_SOURCE:?}
+        target: /data
+        read_only: true
     environment:
       APP_ENV: development
       ALLOW_DEMO_SEED: "true"
@@ -47,10 +51,12 @@ services:
 YAML
 
 export DOTTRACKER_TEST_SOURCE="$project_dir"
+export DOTTRACKER_DATA_SOURCE="$(cd "$project_dir/../data" && pwd)"
 "${compose[@]}" up --wait db
 "${compose[@]}" exec -T db psql -U dottracker -d dottracker -v ON_ERROR_STOP=1 < sql/migrations/0001-initial.sql
 "${compose[@]}" run --rm --no-deps tests sh -ec '
     python -m pip install -r requirements-test.txt
     python migrate.py
+    python scripts/load_cdot_stations.py --data-dir /data
     python -m pytest -q -p no:cacheprovider
 '

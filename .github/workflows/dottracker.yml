@@ -46,8 +46,11 @@ jobs:
       - name: Upgrade schema through migration runner
         run: python migrate.py
         working-directory: dottracker
+      - name: Load CDOT stations reference data
+        run: python scripts/load_cdot_stations.py --data-dir ../data
+        working-directory: dottracker
       - name: Python compile check
-        run: python -m py_compile app/main.py app/geometry.py emulator.py migrate.py scripts/create_org.py tests/api_test.py
+        run: python -m py_compile app/main.py app/geometry.py emulator.py migrate.py scripts/create_org.py scripts/load_cdot_stations.py tests/api_test.py tests/test_cdot_loader.py
         working-directory: dottracker
       - name: JavaScript syntax check
         run: node --input-type=module --check < app/static/app.js

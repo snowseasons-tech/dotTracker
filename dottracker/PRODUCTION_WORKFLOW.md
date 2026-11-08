@@ -40,7 +40,7 @@ Run the same checks as CI from `dottracker/` with a PostgreSQL 17 + PostGIS 3.5 
 python -m pip install -r requirements-test.txt
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/migrations/0001-initial.sql
 python migrate.py
-python -m py_compile app/main.py app/geometry.py emulator.py migrate.py scripts/create_org.py tests/api_test.py
+python -m py_compile app/main.py app/geometry.py emulator.py migrate.py scripts/create_org.py scripts/load_cdot_stations.py tests/api_test.py tests/test_cdot_loader.py
 node --input-type=module --check < app/static/app.js
 python -m pytest -q
 pip-audit -r requirements.txt
@@ -67,17 +67,18 @@ For a new database, apply the current baseline once with the migration role:
 psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/schema.sql
 ```
 
-For an existing supported MVP database, do not reapply the baseline. Take and verify a backup, then let the migration runner apply the pending numbered migrations. It applies 0002 through 0008 in order and records each version.
+For an existing supported MVP database, do not reapply the baseline. Take and verify a backup, then let the migration runner apply the pending numbered migrations. It applies 0002 through 0009 in order and records each version.
 
 Build and run the production migration service, then start the API:
 
 ```bash
 docker compose -f docker-compose.production.yml build api migrate
 docker compose -f docker-compose.production.yml --profile migration run --rm migrate
+docker compose -f docker-compose.production.yml --profile migration run --rm cdot-stations
 docker compose -f docker-compose.production.yml up -d api
 ```
 
-The API refuses to start unless every supported schema version through `0008-safety-checklists` is recorded. Do not bypass this gate to make a deployment appear healthy.
+The API refuses to start unless every supported schema version through `0009-cdot-stations` is recorded. The `cdot-stations` one-shot loads the CDOT reference data from `../data` using the migration credential. Do not bypass this gate to make a deployment appear healthy.
 
 ## 5. Staging acceptance
 

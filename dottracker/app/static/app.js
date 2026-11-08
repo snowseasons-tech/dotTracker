@@ -1,7 +1,7 @@
 import * as maplibregl from 'https://unpkg.com/maplibre-gl@6.16.0/dist/maplibre-gl.mjs';
 const API='/api';let token=localStorage.getItem('dt_token'),refreshToken=localStorage.getItem('dt_refresh'),refreshPromise=null,user=null,map=null,assets=[],observations=[],selectedAsset=null,view='assets',assetsVisible=true,obsVisible=true,pendingPoint=null,observationCapturedAt=null,markers=new Map(),obsMarkers=[],ws=null;
 const $=s=>document.querySelector(s);const inviteToken = new URLSearchParams(location.hash.slice(1)).get('invite');function authHeaders(){return {'Authorization':'Bearer '+token,'Content-Type':'application/json'}}async function renewSession(){if(refreshPromise)return refreshPromise;refreshPromise=(async()=>{let r=await fetch(API+'/auth/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:refreshToken})});if(!r.ok)throw Error('Session expired');let d=await r.json();token=d.access_token;refreshToken=d.refresh_token;localStorage.setItem('dt_token',token);localStorage.setItem('dt_refresh',refreshToken)})().finally(()=>{refreshPromise=null});return refreshPromise}async function api(path,opts={},retried=false){let r=await fetch(API+path,{...opts,headers:{...authHeaders(),...(opts.headers||{})}});if(r.status===401){if(!retried&&refreshToken&&!path.includes('/auth/')){try{await renewSession();return api(path,opts,true)}catch{}}logout();throw Error('Session expired')}if(!r.ok){let e=await r.json().catch(()=>({detail:'Request failed'}));throw Error(e.detail||'Request failed')}return r.status===204?null:r.json()}
-function toast(msg){let t=$('#toast');t.textContent=msg;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}function setLogin(on){$('#login').style.display=on?'grid':'none'}function logout(){cancelFenceDrawing();clearTrip();setPinMode(false);closeModal();let oldRefresh=refreshToken;if(oldRefresh)fetch(API+'/auth/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:oldRefresh})}).catch(()=>{});localStorage.removeItem('dt_token');localStorage.removeItem('dt_refresh');token=null;refreshToken=null;user=null;observations=[];obsMarkers.forEach(marker=>marker.remove());obsMarkers=[];map?.getSource('checkpoints')?.setData(checkpointFeatures());view='assets';$('#items').replaceChildren();document.querySelectorAll('.tab').forEach(tab=>tab.classList.toggle('active',tab.dataset.view===view));setLogin(true);stopLive();setLiveState('offline','Disconnected');clearInterval(assetPoll);clearInterval(observationPoll)}
+function toast(msg){let t=$('#toast');t.textContent=msg;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}function setLogin(on){$('#login').style.display=on?'grid':'none'}function logout(){cancelFenceDrawing();clearTrip();setPinMode(false);closeModal();let oldRefresh=refreshToken;if(oldRefresh)fetch(API+'/auth/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:oldRefresh})}).catch(()=>{});localStorage.removeItem('dt_token');localStorage.removeItem('dt_refresh');token=null;refreshToken=null;user=null;observations=[];cdotStations=[];cdotLoaded=null;map?.getSource('cdot-stations')?.setData(cdotFeatures());obsMarkers.forEach(marker=>marker.remove());obsMarkers=[];map?.getSource('checkpoints')?.setData(checkpointFeatures());view='assets';$('#items').replaceChildren();document.querySelectorAll('.tab').forEach(tab=>tab.classList.toggle('active',tab.dataset.view===view));setLogin(true);stopLive();setLiveState('offline','Disconnected');clearInterval(assetPoll);clearInterval(observationPoll)}
 async function signIn(){try{let data=await fetch(API+'/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('#email').value,password:$('#password').value})}).then(async r=>{let d=await r.json();if(!r.ok)throw Error(d.detail||'Sign in failed');return d});token=data.access_token;refreshToken=data.refresh_token;localStorage.setItem('dt_token',token);localStorage.setItem('dt_refresh',refreshToken);start()}catch(e){$('#loginError').textContent=e.message}}
 $('#loginBtn').onclick=signIn;$('#password').onkeydown=e=>{if(e.key==='Enter')signIn()};
 async function configureDemoControls(){
@@ -78,7 +78,7 @@ $('#inviteBack').onclick = () => {
         start();
     }
 };
-function initMap(){if(map)return;map=new maplibregl.Map({container:'map',style:'https://tiles.openfreemap.org/styles/dark',center:[-104.99,39.739],zoom:11});map.addControl(new maplibregl.NavigationControl(),'top-right');map.on('load',()=>{initCheckpointLayer();refreshAssets();refreshObs()});map.on('contextmenu', e => {if (!fenceDraft) openObservation([e.lngLat.lng, e.lngLat.lat])});map.on('click', e => {
+function initMap(){if(map)return;map=new maplibregl.Map({container:'map',style:'https://tiles.openfreemap.org/styles/dark',center:[-104.99,39.739],zoom:11});map.addControl(new maplibregl.NavigationControl(),'top-right');map.on('load',()=>{initCheckpointLayer();initCdotLayer();refreshAssets();refreshObs()});map.on('contextmenu', e => {if (!fenceDraft) openObservation([e.lngLat.lng, e.lngLat.lat])});map.on('click', e => {
     if (fenceDraft) {
         addFenceCorner(e.lngLat.wrap());
         return;
@@ -181,7 +181,7 @@ function renderTeam(root) {
     };
 }
 
-function renderSidebar(){let counts={moving:0,stopped:0,offline:0};assets.forEach(a=>counts[a.status]++);$('#movingCount').textContent=counts.moving;$('#stoppedCount').textContent=counts.stopped;$('#offlineCount').textContent=counts.offline;let root=$('#items');if(view==='team'){if(!root.querySelector('#teamPanel'))renderTeam(root);return}if(view==='safety'){if(!root.querySelector('#safetyPanel'))renderSafety(root);return}if(view==='dispatch'){renderDispatch(root);return}if(view==='history'&&root.querySelector('#tripForm'))return;if(view==='assets'){let q=$('#search').value.toLowerCase();let list=assets.filter(a=>a.name.toLowerCase().includes(q));root.innerHTML=list.map(a=>`<div class="asset ${a.id===selectedAsset?'sel':''}" data-id="${a.id}"><i class="assetdot ${a.status}"></i><div class="assetinfo"><div class="assetname">${esc(a.name)}</div><div class="assetmeta">${esc(a.kind)} · ${a.recorded_at?new Date(a.recorded_at).toLocaleTimeString():'No GPS fix'}</div></div><span class="speed">${a.speed?Math.round(a.speed)+' km/h':''}</span></div>`).join('')||'<div class="empty">No assets match your search.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{selectedAsset=+el.dataset.id;let a=assets.find(x=>x.id===selectedAsset);if(a?.lat)map.flyTo({center:[a.lng,a.lat],zoom:14});renderSidebar()});return}if(view==='observations'){root.innerHTML=observations.map(o=>`<div class="asset" data-id="${o.id}"><i class="assetdot" style="background:#70a7ff"></i><div class="assetinfo"><div class="assetname">${esc(o.note||(o.kind==='mobile_dot_checkpoint'?'Temporary inspection checkpoint':'Observation pin'))}</div><div class="assetmeta">${esc(o.author)} · ${new Date(o.observed_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No observations yet. Right-click the map to add one.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{let o=observations.find(x=>x.id==el.dataset.id);map.flyTo({center:[o.lng,o.lat],zoom:15})});return}if(view==='alerts'){api('/alerts').then(rows=>{if(view!=='alerts')return;root.innerHTML=rows.map(a=>`<div class="asset"><i class="assetdot" style="background:#f2b95d"></i><div class="assetinfo"><div class="assetname">${esc(a.message)}</div><div class="assetmeta">${new Date(a.created_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No alerts. Geofence events will appear here.</div>'});return}root.innerHTML='<div class="empty">Select an asset to browse up to 30 days of trip history.</div>'}
+function renderSidebar(){let counts={moving:0,stopped:0,offline:0};assets.forEach(a=>counts[a.status]++);$('#movingCount').textContent=counts.moving;$('#stoppedCount').textContent=counts.stopped;$('#offlineCount').textContent=counts.offline;let root=$('#items');if(view==='team'){if(!root.querySelector('#teamPanel'))renderTeam(root);return}if(view==='safety'){if(!root.querySelector('#safetyPanel'))renderSafety(root);return}if(view==='dispatch'){renderDispatch(root);return}if(view==='stations'){renderStations(root);return}if(view==='history'&&root.querySelector('#tripForm'))return;if(view==='assets'){let q=$('#search').value.toLowerCase();let list=assets.filter(a=>a.name.toLowerCase().includes(q));root.innerHTML=list.map(a=>`<div class="asset ${a.id===selectedAsset?'sel':''}" data-id="${a.id}"><i class="assetdot ${a.status}"></i><div class="assetinfo"><div class="assetname">${esc(a.name)}</div><div class="assetmeta">${esc(a.kind)} · ${a.recorded_at?new Date(a.recorded_at).toLocaleTimeString():'No GPS fix'}</div></div><span class="speed">${a.speed?Math.round(a.speed)+' km/h':''}</span></div>`).join('')||'<div class="empty">No assets match your search.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{selectedAsset=+el.dataset.id;let a=assets.find(x=>x.id===selectedAsset);if(a?.lat)map.flyTo({center:[a.lng,a.lat],zoom:14});renderSidebar()});return}if(view==='observations'){root.innerHTML=observations.map(o=>`<div class="asset" data-id="${o.id}"><i class="assetdot" style="background:#70a7ff"></i><div class="assetinfo"><div class="assetname">${esc(o.note||(o.kind==='mobile_dot_checkpoint'?'Temporary inspection checkpoint':'Observation pin'))}</div><div class="assetmeta">${esc(o.author)} · ${new Date(o.observed_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No observations yet. Right-click the map to add one.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{let o=observations.find(x=>x.id==el.dataset.id);map.flyTo({center:[o.lng,o.lat],zoom:15})});return}if(view==='alerts'){api('/alerts').then(rows=>{if(view!=='alerts')return;root.innerHTML=rows.map(a=>`<div class="asset"><i class="assetdot" style="background:#f2b95d"></i><div class="assetinfo"><div class="assetname">${esc(a.message)}</div><div class="assetmeta">${new Date(a.created_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No alerts. Geofence events will appear here.</div>'});return}root.innerHTML='<div class="empty">Select an asset to browse up to 30 days of trip history.</div>'}
 function pendingObservationQueue(){try{let value=JSON.parse(localStorage.getItem('dt_pending_observations')||'[]');if(!Array.isArray(value))return [];return value.filter(o=>o&&typeof o.client_id==='string'&&typeof o.note==='string'&&Number.isFinite(o.lat)&&o.lat>=-90&&o.lat<=90&&Number.isFinite(o.lng)&&o.lng>=-180&&o.lng<=180&&Number.isInteger(o.user_id)&&Number.isInteger(o.org_id)).slice(0,1000)}catch{return []}}
 function savePendingObservationQueue(queue){localStorage.setItem('dt_pending_observations',JSON.stringify(queue))}
 function initCheckpointLayer() {
@@ -936,4 +936,115 @@ async function connectLive() {
 
 let assetPoll = null;
 let observationPoll = null;
+// --- v3: CDOT stations (ports of entry) and highway milepoint lookup ---
+let cdotStations = [], cdotLoaded = null, cdotVisible = false, cdotLookup = null;
+
+function cdotFeatures() {
+    return {
+        type:'FeatureCollection',
+        features:cdotStations.map(station => ({
+            type:'Feature',
+            geometry:{type:'Point', coordinates:[station.lng, station.lat]},
+            properties:{id:String(station.id), status:station.status}
+        }))
+    };
+}
+
+function initCdotLayer() {
+    map.addSource('cdot-stations', {type:'geojson', data:cdotFeatures()});
+    map.addLayer({
+        id:'cdot-station-dots', type:'circle', source:'cdot-stations',
+        layout:{visibility:cdotVisible ? 'visible' : 'none'},
+        paint:{
+            'circle-radius':['interpolate', ['linear'], ['zoom'], 5, 5, 12, 9],
+            'circle-color':['match', ['get', 'status'], 'planned', '#9aa9b8', '#ff9f43'],
+            'circle-stroke-width':2, 'circle-stroke-color':'#0b1118'
+        }
+    });
+    map.on('click', 'cdot-station-dots', e => {
+        const station = cdotStations.find(item => String(item.id) === e.features?.[0]?.properties.id);
+        if (station) new maplibregl.Popup({offset:12}).setLngLat([station.lng, station.lat]).setHTML(cdotPopup(station)).addTo(map);
+    });
+    map.on('mouseenter', 'cdot-station-dots', () => { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', 'cdot-station-dots', () => { map.getCanvas().style.cursor = ''; });
+}
+
+function loadCdotStations() {
+    cdotLoaded ??= api('/v1/cdot/stations').then(rows => {
+        cdotStations = rows;
+        map?.getSource('cdot-stations')?.setData(cdotFeatures());
+        return rows;
+    }).catch(error => { cdotLoaded = null; throw error; });
+    return cdotLoaded;
+}
+
+function cdotStationLabel(station) {
+    return `${station.name} ${station.direction}`;
+}
+
+function cdotPopup(station) {
+    const status = station.status === 'planned' ? 'Planned · not open yet' : esc(station.phone || 'Open');
+    return `<b>${esc(cdotStationLabel(station))}</b><br><span>Port of entry · ${esc(station.highway)} MP ${esc(station.milepost)}</span><br><span>${status}</span>`;
+}
+
+async function setCdotVisible(visible) {
+    cdotVisible = visible;
+    $('#layerCdot').classList.toggle('active', visible);
+    $('#layerCdot').setAttribute('aria-pressed', String(visible));
+    if (map?.getLayer('cdot-station-dots')) map.setLayoutProperty('cdot-station-dots', 'visibility', visible ? 'visible' : 'none');
+    if (!visible) return;
+    try {
+        const rows = await loadCdotStations();
+        if (!rows.length) { toast('No CDOT stations loaded yet. Run the cdot-stations loader.'); return; }
+        const bounds = new maplibregl.LngLatBounds();
+        rows.forEach(station => bounds.extend([station.lng, station.lat]));
+        map?.fitBounds(bounds, {padding:60, maxZoom:9});
+    } catch (error) {
+        toast(`CDOT stations unavailable: ${error.message}`);
+    }
+}
+$('#layerCdot').onclick = () => setCdotVisible(!cdotVisible);
+
+function describeCdotLookup(result) {
+    if (!result) return '';
+    if (result.error) return `<div class="assetmeta">${esc(result.error)}</div>`;
+    const {milepoint, patrol, nearest_station: station} = result;
+    const parts = [];
+    parts.push(milepoint
+        ? `<div class="assetname">Route ${esc(milepoint.route)} · MP ${esc(milepoint.refpt)}</div><div class="assetmeta">${esc(milepoint.distance_m)} m from the milepoint marker</div>`
+        : '<div class="assetname">Not on a CDOT highway</div><div class="assetmeta">No milepoint within 2 km</div>');
+    if (patrol) parts.push(`<div class="assetmeta">Region ${esc(patrol.region)} · Section ${esc(patrol.maintenance_section)} · Patrol ${esc(patrol.patrol)} (${esc(patrol.supervisor_area)}) · MP ${esc(patrol.begin_refpt)}–${esc(patrol.end_refpt)}</div>`);
+    if (station) parts.push(`<div class="assetmeta">Nearest port of entry: ${esc(cdotStationLabel(station))}, ${(station.distance_m / 1000).toFixed(1)} km</div>`);
+    return parts.join('');
+}
+
+async function locateAssetOnHighway(asset) {
+    cdotLookup = {assetId:asset.id, pending:true};
+    if (view === 'stations') renderSidebar();
+    try {
+        const result = await api(`/v1/cdot/locate?lat=${encodeURIComponent(asset.lat)}&lng=${encodeURIComponent(asset.lng)}`);
+        cdotLookup = {assetId:asset.id, result};
+    } catch (error) {
+        cdotLookup = {assetId:asset.id, result:{error:error.message}};
+    }
+    if (view === 'stations') renderSidebar();
+}
+
+function renderStations(root) {
+    const asset = assets.find(item => item.id === selectedAsset && item.lat != null);
+    const lookup = asset && cdotLookup?.assetId === asset.id ? cdotLookup : null;
+    const locate = asset
+        ? `<div class="asset" id="cdotLocate"><i class="assetdot" style="background:#ff9f43"></i><div class="assetinfo"><div class="assetname">Locate ${esc(asset.name)} on CDOT highways</div><div class="assetmeta">${lookup?.pending ? 'Looking up milepoint…' : 'Milepoint, maintenance patrol and nearest port of entry'}</div>${lookup?.result ? describeCdotLookup(lookup.result) : ''}</div></div>`
+        : '<div class="empty">Select an asset with a GPS fix to find its highway milepoint and patrol.</div>';
+    const list = cdotStations.map(station => `<div class="asset" data-cdot="${esc(station.id)}"><i class="assetdot" style="background:${station.status === 'planned' ? '#9aa9b8' : '#ff9f43'}"></i><div class="assetinfo"><div class="assetname">${esc(cdotStationLabel(station))}</div><div class="assetmeta">${esc(station.highway)} MP ${esc(station.milepost)} · ${station.status === 'planned' ? 'Planned' : esc(station.phone || 'Open')}</div></div></div>`).join('');
+    root.innerHTML = locate + (list || `<div class="empty">${cdotLoaded ? 'No CDOT stations loaded. Run the cdot-stations loader.' : 'Loading CDOT stations…'}</div>`);
+    root.querySelector('#cdotLocate')?.addEventListener('click', () => locateAssetOnHighway(asset));
+    root.querySelectorAll('[data-cdot]').forEach(el => el.onclick = () => {
+        const station = cdotStations.find(item => String(item.id) === el.dataset.cdot);
+        if (!station) return;
+        if (!cdotVisible) setCdotVisible(true);
+        map.flyTo({center:[station.lng, station.lat], zoom:13});
+    });
+    if (!cdotLoaded) loadCdotStations().then(() => { if (view === 'stations') renderSidebar(); }).catch(error => toast(`CDOT stations unavailable: ${error.message}`));
+}
 async function start(){try{user=await api('/me');$('#userEmail').textContent=user.email;$('#teamTab').hidden=user.role!=='admin';setLogin(false);initMap();await Promise.all([refreshAssets(),refreshObs()]);flushPendingObservations();syncSafety()?.catch(()=>{});connectLive();clearInterval(assetPoll);clearInterval(observationPoll);assetPoll=setInterval(refreshAssets,15000);observationPoll=setInterval(refreshObs,60000)}catch(e){setLogin(true)}}if(token&&!inviteToken)start();

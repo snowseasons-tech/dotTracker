@@ -13,6 +13,19 @@ services:
     security_opt: ["no-new-privileges:true"]
     cap_drop: ["ALL"]
     profiles: ["migration"]
+  cdot-stations:
+    build: .
+    env_file: .env.production
+    environment:
+      APP_ENV: production
+      ALLOW_DEMO_SEED: "false"
+    command: ["python", "scripts/load_cdot_stations.py", "--data-dir", "/data"]
+    volumes: ["../data:/data:ro"]
+    read_only: true
+    tmpfs: ["/tmp:size=32m,noexec,nosuid"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    profiles: ["migration"]
   api:
     build: .
     env_file: .env.production

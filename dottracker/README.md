@@ -1,6 +1,6 @@
-# dotTracker · production-oriented MVP
+# dotTracker v3 · production-oriented MVP
 
-Development and release gates: see [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md) and the step-by-step [PRODUCTION_WORKFLOW.md](PRODUCTION_WORKFLOW.md). The API refuses to start unless all supported migrations through `0008-safety-checklists` are applied.
+Development and release gates: see [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md) and the step-by-step [PRODUCTION_WORKFLOW.md](PRODUCTION_WORKFLOW.md). The API refuses to start unless all supported migrations through `0009-cdot-stations` are applied.
 
 A pilot fleet-tracking application with a responsive MapLibre dashboard, FastAPI API, PostgreSQL/PostGIS schema, Argon2id password hashing, rotating opaque refresh sessions, org-scoped access, individual tracker credentials, short-lived one-use WebSocket tickets, duplicate-fix and observation idempotency, offline observation queueing, trip history, circle/polygon geofences, alerts, and observation pins.
 
@@ -13,6 +13,8 @@ cp .env.example .env
 docker compose up --build
 ```
 
+Compose starts four services in order: `db` (PostgreSQL 17 + PostGIS 3.5), `migrate` (one-shot schema upgrade), `cdot-stations` (one-shot CDOT reference data load from `../data`), and `api`. The API waits until both one-shot services exit successfully.
+
 Open http://localhost:8000 and choose **Initialize demo workspace**. Demo login: `admin@dottracker.local` / `dottracker-demo`.
 
 Run the emulator:
@@ -22,6 +24,30 @@ python3 emulator.py --count 3 --interval 5
 ```
 
 The demo tracker IDs and credential are seeded only in development. Do not reuse them. Demo seeding is disabled unless `APP_ENV=development` and `ALLOW_DEMO_SEED=true`; it is hard-disabled in production.
+
+## CDOT stations (v3)
+
+Version 3 adds Colorado DOT reference data shared by every workspace:
+
+- **Ports of entry** (`data/POELocations_*.csv`, 16 stations). A port with no phone number is marked *planned*.
+- **Highway milepoints** (`data/Milepoints.csv`, 9,006 markers). Coordinates are converted from NAD83 / UTM 13N to WGS 84 on load.
+- **Maintenance patrol sections** (`data/Maintenance_Patrols.csv`, 579 sections by route and milepoint range).
+
+Turn on **▲ CDOT stations** on the map to show ports of entry: orange for open, grey for planned. Open **Stations** to list them and fly to one. Select an asset first to see **Locate … on CDOT highways**. It shows the nearest milepoint within 2 km, the maintenance patrol covering it, and the nearest port of entry.
+
+The `cdot-stations` Compose service runs `scripts/load_cdot_stations.py`. It validates every file before it changes anything. Then it replaces the reference tables in one transaction and records each file's SHA-256 and row count in `cdot_datasets`. Re-run it after you update the CSVs:
+
+```bash
+docker compose run --rm cdot-stations
+```
+
+API (any signed-in user; read-only):
+
+- `GET /api/v1/cdot/stations?status=open|planned`
+- `GET /api/v1/cdot/locate?lat=&lng=` returns `{milepoint, patrol, nearest_station}`. `milepoint` and `patrol` are `null` off the highway network.
+- `GET /api/v1/cdot/summary` returns the loaded datasets with row counts and load time.
+
+`GET /api/config` now also reports `"version": "3.0.0"`.
 
 ## Replay a trip
 
@@ -41,7 +67,7 @@ The invited person opens the link, sets and confirms a password of at least 14 c
 
 Use the step-by-step [production development and release workflow](PRODUCTION_WORKFLOW.md) for database setup, migration, TLS ingress, staging acceptance, backup restore, release, and rollback.
 
-The production Compose profile expects an operator-provisioned PostgreSQL 17 + PostGIS 3.5 database, a private TLS reverse proxy or managed edge, and separate least-privilege runtime and migration credentials. New databases receive `sql/schema.sql` once; supported existing databases are upgraded by `migrate.py`. The API refuses to start until migrations 0002 through 0008 are recorded.
+The production Compose profile expects an operator-provisioned PostgreSQL 17 + PostGIS 3.5 database, a private TLS reverse proxy or managed edge, and separate least-privilege runtime and migration credentials. New databases receive `sql/schema.sql` once; supported existing databases are upgraded by `migrate.py`. The API refuses to start until migrations 0002 through 0009 are recorded.
 
 Production hosting, database credentials, TLS ingress, monitoring, and a verified backup restore are not configured in this repository. dotTracker is not production-verified until the staging gates in the workflow have passed.
 
@@ -123,7 +149,7 @@ Run the checks from this directory with a disposable PostgreSQL 17 + PostGIS 3.5
 ```bash
 python -m pip install -r requirements-test.txt
 python -m pytest -q
-python -m py_compile app/main.py app/geometry.py emulator.py migrate.py scripts/create_org.py tests/api_test.py
+python -m py_compile app/main.py app/geometry.py emulator.py migrate.py scripts/create_org.py scripts/load_cdot_stations.py tests/api_test.py tests/test_cdot_loader.py
 node --input-type=module --check < app/static/app.js
 pip-audit -r requirements.txt
 docker build -t dottracker:review .
