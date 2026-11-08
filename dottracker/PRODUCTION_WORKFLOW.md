@@ -81,6 +81,8 @@ The API refuses to start unless every supported schema version through `0008-saf
 
 ## 5. Staging acceptance
 
+Run the step-by-step checks in [STAGING_ACCEPTANCE.md](STAGING_ACCEPTANCE.md) and record the results in its release record. The summary below is the required scope:
+
 Exercise the release through the same private ingress that production will use:
 
 - `/health` returns success only after database connection and schema validation.
