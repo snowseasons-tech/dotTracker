@@ -139,6 +139,51 @@ def test_invitation_is_single_use_and_respects_role(client):
                        json={'name': 'Should not create'}).status_code == 403
 
 
+def test_invitation_authorization_replacement_and_expiry(client):
+    headers = login(client)
+    # Duplicate of an existing account is rejected before a token is issued.
+    duplicate = client.post('/api/invites', headers=headers,
+                            json={'email': 'admin@dottracker.local', 'role': 'viewer'})
+    assert duplicate.status_code == 409
+
+    # A replacement invitation for the same email invalidates the earlier link.
+    first = client.post('/api/invites', headers=headers,
+                        json={'email': 'replaced.invite@test.invalid', 'role': 'viewer'})
+    assert first.status_code == 201
+    second = client.post('/api/invites', headers=headers,
+                         json={'email': 'replaced.invite@test.invalid', 'role': 'admin'})
+    assert second.status_code == 201
+    stale = client.post('/api/invites/accept', json={
+        'token': first.json()['invite_token'], 'password': 'replacement-password-long'})
+    assert stale.status_code == 400
+    current = client.post('/api/invites/accept', json={
+        'token': second.json()['invite_token'], 'password': 'replacement-password-long'})
+    assert current.status_code == 201
+    admin_headers = {'Authorization': f"Bearer {current.json()['access_token']}"}
+    assert client.get('/api/me', headers=admin_headers).json()['role'] == 'admin'
+
+    # Only administrators may create invitations.
+    viewer = client.post('/api/invites', headers=headers,
+                         json={'email': 'viewer.cannot.invite@test.invalid', 'role': 'viewer'})
+    viewer_token = client.post('/api/invites/accept', json={
+        'token': viewer.json()['invite_token'], 'password': 'viewer-cannot-invite-long'}).json()['access_token']
+    viewer_headers = {'Authorization': f'Bearer {viewer_token}'}
+    assert client.post('/api/invites', headers=viewer_headers,
+                       json={'email': 'escalation@test.invalid', 'role': 'admin'}).status_code == 403
+
+    # An expired invitation is refused even when its token is otherwise correct.
+    expiring = client.post('/api/invites', headers=headers,
+                           json={'email': 'expired.invite@test.invalid', 'role': 'viewer'})
+    assert expiring.status_code == 201
+    with psycopg.connect(os.environ['DATABASE_URL']) as conn:
+        conn.execute("UPDATE invites SET expires_at = now() - interval '1 minute' WHERE email=%s",
+                     ('expired.invite@test.invalid',))
+        conn.commit()
+    expired = client.post('/api/invites/accept', json={
+        'token': expiring.json()['invite_token'], 'password': 'expired-invite-password-long'})
+    assert expired.status_code == 400
+
+
 def test_refresh_rotation_and_logout_revoke_session(client):
     initial = client.post('/api/auth/login', json={
         'email': 'admin@dottracker.local', 'password': 'dottracker-demo'
