@@ -39,6 +39,7 @@ SUPPORTED_SCHEMA_VERSIONS=frozenset({
     '0007-geofence-spatial',
     '0008-safety-checklists',
     '0009-cdot-stations',
+    '0010-inspection-sites',
 })
 
 def missing_schema_versions(applied_versions):
@@ -77,7 +78,7 @@ async def lifespan(app):
             await asyncio.sleep(1)
     else: raise RuntimeError('Database unavailable')
     yield
-APP_VERSION='3.0.0'
+APP_VERSION='3.1.0'
 app=FastAPI(title='dotTracker API', version=APP_VERSION, lifespan=lifespan,
             docs_url=None if IS_PRODUCTION else '/docs', redoc_url=None if IS_PRODUCTION else '/redoc',
             openapi_url=None if IS_PRODUCTION else '/openapi.json')
@@ -504,6 +505,63 @@ def cdot_locate(lat: float = Query(ge=-90, le=90, allow_inf_nan=False), lng: flo
         SELECT {CDOT_STATION_COLUMNS}, round(ST_Distance(s.geom::geography, here.g::geography))::int AS distance_m
         FROM cdot_stations s, here ORDER BY s.geom <-> here.g LIMIT 1""", here).fetchone()
     return {'milepoint': milepoint, 'patrol': patrol, 'nearest_station': station}
+
+
+# --- v3.1: non-permanent safety inspection stations (org-scoped; admins place and end them) ---
+INSPECTION_SITE_COLUMNS = ("""id, name, agency, highway, milepost::float AS milepost, direction, notes, lat, lng,
+    starts_at, ends_at, CASE WHEN starts_at > clock_timestamp() THEN 'scheduled' ELSE 'active' END AS status""")
+MAX_INSPECTION_WINDOW = timedelta(days=30)
+
+
+class InspectionSiteIn(StrictModel):
+    name: str = Field(min_length=1, max_length=120)
+    agency: str = Field(min_length=1, max_length=80)
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
+    highway: Optional[str] = Field(default=None, max_length=40)
+    milepost: Optional[float] = Field(default=None, ge=0, le=9999)
+    direction: Optional[str] = Field(default=None, max_length=20)
+    notes: str = Field(default='', max_length=1000)
+    starts_at: Optional[datetime] = None
+    ends_at: datetime
+
+
+@app.get('/api/v1/inspection-sites')
+def inspection_sites(c=Depends(db), u=Depends(current_user)):
+    return c.execute(f"""SELECT {INSPECTION_SITE_COLUMNS} FROM inspection_sites
+        WHERE org_id=%s AND ended_at IS NULL AND ends_at > now()
+        ORDER BY starts_at, id LIMIT 500""", (u['org_id'],)).fetchall()
+
+
+@app.post('/api/v1/inspection-sites', status_code=201)
+def add_inspection_site(body: InspectionSiteIn, background_tasks: BackgroundTasks, c=Depends(db), u=Depends(admin)):
+    now = datetime.now(timezone.utc)
+    starts = require_aware(body.starts_at, 'starts_at') if body.starts_at else now
+    ends = require_aware(body.ends_at, 'ends_at')
+    if ends <= starts: raise HTTPException(422, 'ends_at must be after starts_at')
+    if ends <= now: raise HTTPException(422, 'ends_at must be in the future')
+    if ends - starts > MAX_INSPECTION_WINDOW: raise HTTPException(422, 'A non-permanent site can stay up for at most 30 days')
+    if starts > now + MAX_INSPECTION_WINDOW: raise HTTPException(422, 'starts_at can be at most 30 days ahead')
+    optional = lambda value: (value or '').strip() or None
+    row = c.execute(f"""INSERT INTO inspection_sites
+        (org_id,name,agency,highway,milepost,direction,notes,lat,lng,starts_at,ends_at,created_by)
+        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING {INSPECTION_SITE_COLUMNS}""",
+        (u['org_id'], body.name, body.agency, optional(body.highway), body.milepost, optional(body.direction),
+         body.notes.strip(), body.lat, body.lng, starts, ends, u['id'])).fetchone()
+    c.commit()
+    background_tasks.add_task(hub.publish, u['org_id'], {'type': 'inspection_site_changed', 'data': {'id': row['id']}})
+    return row
+
+
+@app.post('/api/v1/inspection-sites/{site_id}/end')
+def end_inspection_site(background_tasks: BackgroundTasks, site_id: int = ApiPath(gt=0), c=Depends(db), u=Depends(admin)):
+    row = c.execute("""UPDATE inspection_sites SET ended_at=now()
+        WHERE id=%s AND org_id=%s AND ended_at IS NULL AND ends_at > now() RETURNING id""",
+        (site_id, u['org_id'])).fetchone()
+    if not row: raise HTTPException(404, 'Inspection site not found or already ended')
+    c.commit()
+    background_tasks.add_task(hub.publish, u['org_id'], {'type': 'inspection_site_changed', 'data': {'id': site_id}})
+    return {'id': site_id, 'ended': True}
 
 
 @app.get('/api/observations')
