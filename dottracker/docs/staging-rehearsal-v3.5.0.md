@@ -63,8 +63,11 @@ A dress rehearsal of [STAGING_ACCEPTANCE.md](../STAGING_ACCEPTANCE.md) and the p
 | F20 | Partial | Route saved and read back via the API; browser reconnect not exercised |
 | U1 | Pass | Wrong password shows "Email or password is incorrect" |
 | U3 | Fail → fixed | Bug 4; re-run with OpenFreeMap unreachable: offline map shown, all app layers present, status says "Base map unavailable" |
-| U7 | **Fail (open)** | At 375 px the page is 685 px wide (the 350 px sidebar plus the map toolbar). Needs a phone layout |
-| U2, U4–U6 | Not run | Network-disconnect, API-down, offline checklist and keyboard-only checks need a manual browser session |
+| U7 | Fail → fixed in 3.6.0 | At 375 px the page was 685 px wide (the map toolbar did not wrap). 3.6.0: 375 px and iPhone 13 widths have no horizontal scroll and every toolbar button is reachable |
+| U2 | Fail → fixed in 3.6.0 | Browser offline still showed "Live connection". 3.6.0 shows "Disconnected" at once and returns to "Live connection" on reconnect |
+| U4 | Pass (3.6.0 run) | API returning 503: the geofence form shows "Database request failed", nothing claims success, map status shows "Asset refresh failed" |
+| U5 | Pass (3.6.0 run) | Checklist submitted offline shows "1 checklists pending sync", reaches the server exactly once after reconnecting |
+| U6 | Pass (3.6.0 run) | Sign-in, team invite and circle geofence completed with the keyboard only |
 | O1–O5 | Not run | No log storage, monitors or alert channel in the sandbox |
 | Rollback | Pass | v3.4.0 image over v3.5.0 on the migrated database: healthy in 1.7 s, sign-in works, migration state unchanged; rolled forward again. **Note:** read marks made while rolled back go to the old workspace-wide column and don't carry forward |
 
@@ -74,6 +77,5 @@ A dress rehearsal of [STAGING_ACCEPTANCE.md](../STAGING_ACCEPTANCE.md) and the p
 2. **Real TLS edge** with a CA-issued certificate (T2), the login *and ingest* rate limits (P3), and `--forwarded-allow-ips` set to the proxy's address; then re-run T5 and T6 from outside the network, and the external port scan (P4).
 3. **Secrets in a secret manager** (P6) and the **image pushed by digest** from CI (P7), then run the organization's **container scanner** (B2) on that digest.
 4. **Logs, health monitoring and an alert owner** (P5, O1–O5).
-5. **Manual browser checks** U2, U4, U5, U6, and F20's reconnect, on desktop and phone.
-6. **Fix U7** (no horizontal scroll at 375 px) before onboarding field crews on phones.
-7. Fill in the release record (STAGING_ACCEPTANCE.md section 10) on the real staging host, with an approver.
+5. **Browser checks on real devices:** run `tests/browser/acceptance.js` against staging, and check F20's reconnect by hand on a desktop and a phone.
+6. Fill in the release record (STAGING_ACCEPTANCE.md section 10) on the real staging host, with an approver.

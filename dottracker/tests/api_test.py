@@ -61,7 +61,7 @@ def test_schema_gate_requires_every_supported_migration():
 
 
 def test_demo_seed_is_hidden_in_production(client):
-    assert client.get('/api/config').json() == {'demo_seed_enabled': True, 'version': '3.5.0', 'map_style': 'https://tiles.openfreemap.org/styles/dark'}
+    assert client.get('/api/config').json() == {'demo_seed_enabled': True, 'version': '3.6.0', 'map_style': 'https://tiles.openfreemap.org/styles/dark'}
     assert demo_seed_enabled('development', 'true') is True
     assert demo_seed_enabled('development', 'false') is False
     assert demo_seed_enabled('production', 'true') is False

@@ -106,7 +106,7 @@ async def lifespan(app):
             await asyncio.sleep(1)
     else: raise RuntimeError('Database unavailable')
     yield
-APP_VERSION='3.5.0'
+APP_VERSION='3.6.0'
 app=FastAPI(title='dotTracker API', version=APP_VERSION, lifespan=lifespan,
             docs_url=None if IS_PRODUCTION else '/docs', redoc_url=None if IS_PRODUCTION else '/redoc',
             openapi_url=None if IS_PRODUCTION else '/openapi.json')

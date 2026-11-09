@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.6.0 — Phone layout, truthful offline status, browser acceptance checks
+
+- **Phone layout:** at phone widths the page no longer scrolls sideways (it was 685 px wide at 375 px). The map toolbar is one row you can swipe inside the map, kept clear of the zoom buttons; the header drops the email address and subtitle. Staging rehearsal U7.
+- **Truthful connection state:** when the browser goes offline, the status shows "Disconnected" immediately and reconnects when the network returns. Before, a dropped network could leave it showing "Live connection" (U2).
+- **Browser acceptance checks:** `tests/browser/acceptance.js` runs U2, U4, U5, U6 and U7 (at 375 px and on an emulated iPhone 13) against any dotTracker and exits non-zero on a failure.
+
 ## 3.5.0 — Configurable base map and per-person alert reads
 
 - **Base map:** new `MAP_STYLE_URL` setting. The default is OpenFreeMap; `offline` serves a built-in map (Colorado outline and CDOT highways drawn from the milepoints) that needs no outside network; or use any `https://` style from your own tile server. `MAP_EXTRA_ORIGINS` lists any other tile, glyph or sprite hosts. The CSP's `connect-src` now allows only the configured origins, and the API refuses to start on a non-HTTPS value. New `GET /api/v1/map/offline-style.json` and `GET /api/v1/map/highways.geojson` (signed in).
