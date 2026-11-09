@@ -47,7 +47,14 @@ API (any signed-in user; read-only):
 - `GET /api/v1/cdot/locate?lat=&lng=` returns `{milepoint, patrol, nearest_station}`. `milepoint` and `patrol` are `null` off the highway network.
 - `GET /api/v1/cdot/summary` returns the loaded datasets with row counts and load time.
 
-`GET /api/config` also reports the app version (`"version": "3.2.1"`).
+`GET /api/config` also reports the app version (`"version": "3.3.0"`).
+
+## Alerts on the map, pausing geofences, and who placed a site (v3.3)
+
+- **⚠ Alerts** shows the last 24 hours of geofence alerts where they happened: amber for enter, orange for exit. Select a dot for the alert, the asset and the time. Dots refresh shortly after new tracker fixes arrive, and every minute.
+- Admins can **Pause alerts** or **Resume alerts** from a geofence's popup (`PATCH /api/geofences/{id}` with `{"enabled": false|true}`). A paused fence is drawn faded, and crossing it raises no alerts.
+- An inspection site's popup shows who placed it and when (`placed_by`, `placed_at` in the API).
+- `GET /api/alerts` also returns `asset_name`, `event`, `occurred_at`, `lat` and `lng`.
 
 ## Geofences on the map (v3.2)
 
@@ -180,7 +187,7 @@ GitHub Actions runs the PostgreSQL/PostGIS migration and API suite, Python and J
 
 ## Run integration tests with Docker
 
-Run `bash scripts/test_with_docker.sh` from this directory. The runner starts a temporary PostGIS database without publishing ports, upgrades the prior MVP schema, runs pytest, and removes the test containers and volumes on exit.
+Run `bash scripts/test_with_docker.sh` from this directory. Accounts the tests create get a per-run suffix, so the suite can also be rerun against the same development database. The runner starts a temporary PostGIS database without publishing ports, upgrades the prior MVP schema, runs pytest, and removes the test containers and volumes on exit.
 
 ## Sort a crew route
 

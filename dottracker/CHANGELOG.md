@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.3.0 — Alerts on the map, pausing geofences, who placed a site
+
+- **Alerts on the map:** the new **⚠ Alerts** layer shows the last 24 hours of geofence alerts at the fix that crossed the fence, with a popup for the alert, asset and time. `GET /api/alerts` now also returns `asset_name`, `event`, `occurred_at`, `lat` and `lng`.
+- **Pause geofence alerts:** new admin-only `PATCH /api/geofences/{id}` (`{"enabled": bool}`), with **Pause alerts** and **Resume alerts** in the geofence popup. Ingest already skipped disabled fences, so a paused fence raises no alerts.
+- **Who placed an inspection site:** the API returns `placed_by` (email) and `placed_at`, and the popup shows them.
+- **Re-runnable tests:** accounts the tests create get a per-run suffix, so the suite passes repeatedly on one database. Before, a second run failed three tests on duplicate users.
+
 ## 3.2.1 — MapLibre served by the app
 
 - MapLibre GL JS 6.16.0 is now vendored under `app/static/vendor/maplibre-gl-6.16.0/`: unmodified files from the npm package, with their license and recorded SHA-256 hashes. The map no longer loads code from unpkg at runtime, so a CDN outage or change can't break or alter it.
