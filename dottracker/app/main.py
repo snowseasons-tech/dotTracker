@@ -78,7 +78,7 @@ async def lifespan(app):
             await asyncio.sleep(1)
     else: raise RuntimeError('Database unavailable')
     yield
-APP_VERSION='3.2.0'
+APP_VERSION='3.2.1'
 app=FastAPI(title='dotTracker API', version=APP_VERSION, lifespan=lifespan,
             docs_url=None if IS_PRODUCTION else '/docs', redoc_url=None if IS_PRODUCTION else '/redoc',
             openapi_url=None if IS_PRODUCTION else '/openapi.json')
@@ -91,7 +91,7 @@ async def security_headers(request, call_next):
     response.headers['X-Frame-Options']='DENY'
     response.headers['Referrer-Policy']='no-referrer'
     response.headers['Permissions-Policy']='camera=(), microphone=(), geolocation=()'
-    response.headers['Content-Security-Policy']="default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; worker-src blob: https://unpkg.com/maplibre-gl@6.16.0/; script-src 'self' https://unpkg.com/maplibre-gl@6.16.0/; style-src 'self' 'unsafe-inline' https://unpkg.com/maplibre-gl@6.16.0/; img-src 'self' data: blob:; connect-src 'self' wss: https://tiles.openfreemap.org https://*.openfreemap.org; font-src 'self' data: https://fonts.gstatic.com"
+    response.headers['Content-Security-Policy']="default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; worker-src 'self' blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' wss: https://tiles.openfreemap.org https://*.openfreemap.org; font-src 'self' data: https://fonts.gstatic.com"
     response.headers['Cache-Control']='no-store' if request.url.path.startswith('/api/') else 'no-cache'
     if request.url.scheme=='https': response.headers['Strict-Transport-Security']='max-age=31536000'
     return response

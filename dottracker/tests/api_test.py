@@ -46,7 +46,7 @@ def test_schema_gate_requires_every_supported_migration():
 
 
 def test_demo_seed_is_hidden_in_production(client):
-    assert client.get('/api/config').json() == {'demo_seed_enabled': True, 'version': '3.2.0'}
+    assert client.get('/api/config').json() == {'demo_seed_enabled': True, 'version': '3.2.1'}
     assert demo_seed_enabled('development', 'true') is True
     assert demo_seed_enabled('development', 'false') is False
     assert demo_seed_enabled('production', 'true') is False
@@ -57,8 +57,12 @@ def test_readiness_and_security_headers(client):
     assert response.status_code == 200
     assert response.headers['x-content-type-options'] == 'nosniff'
     assert "frame-ancestors 'none'" in response.headers['content-security-policy']
-    # MapLibre 6 starts a blob: module worker that imports its worker code from the same CDN path.
-    assert 'worker-src blob: https://unpkg.com/maplibre-gl@6.16.0/;' in response.headers['content-security-policy']
+    # MapLibre is served by the app itself: no third-party script, style or worker source is allowed.
+    csp = response.headers['content-security-policy']
+    assert "script-src 'self';" in csp and "worker-src 'self' blob:;" in csp and 'unpkg' not in csp
+    for name, kind in [('maplibre-gl.mjs', 'javascript'), ('maplibre-gl-worker.mjs', 'javascript'), ('maplibre-gl.css', 'css')]:
+        asset = client.get(f'/static/vendor/maplibre-gl-6.16.0/{name}')
+        assert asset.status_code == 200 and kind in asset.headers['content-type'], name
 
 
 def test_org_scope_and_viewer_permissions(client):
