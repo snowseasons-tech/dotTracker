@@ -47,7 +47,11 @@ API (any signed-in user; read-only):
 - `GET /api/v1/cdot/locate?lat=&lng=` returns `{milepoint, patrol, nearest_station}`. `milepoint` and `patrol` are `null` off the highway network.
 - `GET /api/v1/cdot/summary` returns the loaded datasets with row counts and load time.
 
-`GET /api/config` also reports the app version (`"version": "3.1.1"`).
+`GET /api/config` also reports the app version (`"version": "3.2.0"`).
+
+## Geofences on the map (v3.2)
+
+Saved geofences are outlined on the map in teal: polygons by their corners, circles at their true radius. Select one to see its name, shape and size, and whether enter and exit alerts are on. Admins can **Delete geofence** from the popup, which also deletes that fence's past alerts. **▢ Geofence areas** shows or hides the outlines. **Geofences → Find existing** zooms to fit every fence. To create a fence, choose **Geofences**, then **Circle** (centred on the map) or **Draw polygon**.
 
 ## Non-permanent safety inspection stations (v3.1)
 

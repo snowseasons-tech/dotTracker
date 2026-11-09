@@ -46,7 +46,7 @@ def test_schema_gate_requires_every_supported_migration():
 
 
 def test_demo_seed_is_hidden_in_production(client):
-    assert client.get('/api/config').json() == {'demo_seed_enabled': True, 'version': '3.1.1'}
+    assert client.get('/api/config').json() == {'demo_seed_enabled': True, 'version': '3.2.0'}
     assert demo_seed_enabled('development', 'true') is True
     assert demo_seed_enabled('development', 'false') is False
     assert demo_seed_enabled('production', 'true') is False
@@ -461,3 +461,21 @@ def test_inspection_sites_are_admin_placed_org_scoped_and_expire(client):
         conn.execute("UPDATE inspection_sites SET starts_at=now()-interval '2 hours', ends_at=now()-interval '1 minute' WHERE id=%s",
                      (scheduled.json()['id'],))
     assert all(row['id'] != scheduled.json()['id'] for row in client.get(path, headers=admin_headers).json())
+
+
+def test_geofence_list_and_delete_are_org_scoped_and_admin_only(client):
+    admin_headers = login(client)
+    fence = client.post('/api/geofences', headers=admin_headers, json={
+        'name': 'Delete me', 'shape': 'circle', 'geometry': {'lat': 39.74, 'lng': -104.99, 'radius_m': 250}})
+    assert fence.status_code == 200, fence.text
+    fence_id = fence.json()['id']
+    listed = client.get('/api/geofences', headers=admin_headers).json()
+    assert any(row['id'] == fence_id and row['shape'] == 'circle' and row['geometry']['radius_m'] == 250 for row in listed)
+
+    outsider = login(client, 'viewer-isolation@test.invalid', 'test-viewer-password-long')
+    assert all(row['id'] != fence_id for row in client.get('/api/geofences', headers=outsider).json())
+    assert client.delete(f'/api/geofences/{fence_id}', headers=outsider).status_code == 403
+
+    assert client.delete(f'/api/geofences/{fence_id}', headers=admin_headers).json() == {'deleted': True}
+    assert client.delete(f'/api/geofences/{fence_id}', headers=admin_headers).status_code == 404
+    assert all(row['id'] != fence_id for row in client.get('/api/geofences', headers=admin_headers).json())

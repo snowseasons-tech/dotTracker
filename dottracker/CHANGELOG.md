@@ -1,5 +1,12 @@
 # Changelog
 
+## 3.2.0 — Saved geofences on the map
+
+- Every saved geofence is now outlined on the map. Polygons use their corners, and circles are drawn at their true ground radius. Before this, only a fence you were drawing was visible.
+- Click a geofence to see its name, shape and size, and whether alerts are on. Admins can **Delete geofence** from the popup; the fence's past alerts are deleted with it. Points and symbols above a fence keep their own popups.
+- New **▢ Geofence areas** layer toggle. **Find existing** now zooms to fit every geofence instead of flying to one, and a newly saved fence appears right away. The list also refreshes every minute.
+- Added an API test for listing and deleting geofences: workspace-scoped, and delete is admin-only.
+
 ## 3.1.1 — Map loads under the Content Security Policy
 
 - Fixed: in a browser, the map never finished loading, so nothing added after load appeared. That includes checkpoint symbols, the CDOT stations layer and inspection sites. MapLibre 6 starts a `blob:` module worker that imports its worker code from `https://unpkg.com/maplibre-gl@6.16.0/`, and the CSP's `worker-src` allowed only `blob:`. `worker-src` now also allows that exact MapLibre path, and a test checks the header.
