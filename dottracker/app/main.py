@@ -78,7 +78,7 @@ async def lifespan(app):
             await asyncio.sleep(1)
     else: raise RuntimeError('Database unavailable')
     yield
-APP_VERSION='3.3.0'
+APP_VERSION='3.4.0'
 app=FastAPI(title='dotTracker API', version=APP_VERSION, lifespan=lifespan,
             docs_url=None if IS_PRODUCTION else '/docs', redoc_url=None if IS_PRODUCTION else '/redoc',
             openapi_url=None if IS_PRODUCTION else '/openapi.json')
@@ -376,8 +376,10 @@ def publish_dispatch_route(asset_id: int, body: RouteRequest, background_tasks: 
 def geofences(c=Depends(db),u=Depends(current_user)):
     return c.execute('SELECT id,name,shape,geometry,enabled FROM geofences WHERE org_id=%s ORDER BY name',(u['org_id'],)).fetchall()
 @app.post('/api/geofences')
-def add_geofence(b:GeofenceIn,c=Depends(db),u=Depends(admin)):
-    return save_geofence(b, c, u['org_id'])
+def add_geofence(b:GeofenceIn,background_tasks:BackgroundTasks,c=Depends(db),u=Depends(admin)):
+    row = save_geofence(b, c, u['org_id'])
+    publish_geofence_change(background_tasks, u['org_id'], row['id'])
+    return row
 
 
 class PolygonGeofenceIn(StrictModel):
@@ -386,9 +388,16 @@ class PolygonGeofenceIn(StrictModel):
 
 
 @app.post('/api/v1/geofences', status_code=201)
-def add_polygon_geofence(body: PolygonGeofenceIn, c=Depends(db), u=Depends(admin)):
+def add_polygon_geofence(body: PolygonGeofenceIn, background_tasks: BackgroundTasks, c=Depends(db), u=Depends(admin)):
     geometry = {'coordinates': [list(point) for point in body.coordinates]}
-    return save_geofence(GeofenceIn(name=body.name, shape='polygon', geometry=geometry), c, u['org_id'])
+    row = save_geofence(GeofenceIn(name=body.name, shape='polygon', geometry=geometry), c, u['org_id'])
+    publish_geofence_change(background_tasks, u['org_id'], row['id'])
+    return row
+
+
+def publish_geofence_change(background_tasks: BackgroundTasks, org_id: int, fence_id: int):
+    # Open maps in the workspace refresh their geofence layer.
+    background_tasks.add_task(hub.publish, org_id, {'type': 'geofence_changed', 'data': {'id': fence_id}})
 
 
 def save_geofence(b: GeofenceIn, c, org_id: int):
@@ -424,18 +433,20 @@ class GeofenceUpdate(StrictModel):
 
 
 @app.patch('/api/geofences/{fid}')
-def update_geofence(body: GeofenceUpdate, fid: int = ApiPath(gt=0), c=Depends(db), u=Depends(admin)):
+def update_geofence(body: GeofenceUpdate, background_tasks: BackgroundTasks, fid: int = ApiPath(gt=0), c=Depends(db), u=Depends(admin)):
     row = c.execute('UPDATE geofences SET enabled=%s WHERE id=%s AND org_id=%s RETURNING id,name,shape,geometry,enabled',
                     (body.enabled, fid, u['org_id'])).fetchone()
     if not row: raise HTTPException(404, 'Geofence not found')
     c.commit()
+    publish_geofence_change(background_tasks, u['org_id'], fid)
     return row
 
 
 @app.delete('/api/geofences/{fid}')
-def delete_geofence(fid:int,c=Depends(db),u=Depends(admin)):
+def delete_geofence(fid:int,background_tasks:BackgroundTasks,c=Depends(db),u=Depends(admin)):
     cur=c.execute('DELETE FROM geofences WHERE id=%s AND org_id=%s',(fid,u['org_id']));c.commit()
     if cur.rowcount==0: raise HTTPException(404,'Geofence not found')
+    publish_geofence_change(background_tasks, u['org_id'], fid)
     return {'deleted':True}
 
 @app.post('/api/observations')
@@ -635,6 +646,23 @@ def alerts(c=Depends(db),u=Depends(current_user)):
         LEFT JOIN geofence_events e ON e.id = a.event_id AND e.org_id = a.org_id
         LEFT JOIN positions p ON p.id = e.position_id AND p.org_id = a.org_id
         WHERE a.org_id=%s ORDER BY a.created_at DESC LIMIT 100''',(u['org_id'],)).fetchall()
+
+class AlertsRead(StrictModel):
+    ids: Optional[list[int]] = Field(default=None, min_length=1, max_length=500)
+
+
+@app.post('/api/alerts/read')
+def mark_alerts_read(body: AlertsRead, background_tasks: BackgroundTasks, c=Depends(db), u=Depends(current_user)):
+    # Without ids, every unread alert in the workspace is marked read.
+    if body.ids is None:
+        cur = c.execute('UPDATE alerts SET read_at=now() WHERE org_id=%s AND read_at IS NULL', (u['org_id'],))
+    else:
+        cur = c.execute('UPDATE alerts SET read_at=now() WHERE org_id=%s AND read_at IS NULL AND id = ANY(%s)', (u['org_id'], body.ids))
+    c.commit()
+    if cur.rowcount:
+        background_tasks.add_task(hub.publish, u['org_id'], {'type': 'alerts_read'})
+    return {'marked_read': cur.rowcount}
+
 
 @app.post('/api/live-ticket')
 def live_ticket(c=Depends(db),u=Depends(current_user)):

@@ -1,0 +1,43 @@
+name: Release tag
+# After CI passes on main, tag the commit with the app version if that tag is new.
+# The version comes from APP_VERSION in dottracker/app/main.py at that commit.
+on:
+  workflow_run:
+    workflows: ["dotTracker CI"]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: write
+concurrency:
+  group: release-tag
+  cancel-in-progress: false
+jobs:
+  tag:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - name: Create the version tag if it does not exist
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          version=$(sed -nE "s/^APP_VERSION='([0-9]+\.[0-9]+\.[0-9]+)'$/\1/p" dottracker/app/main.py)
+          if [ -z "$version" ]; then
+            echo "::error::APP_VERSION='X.Y.Z' not found in dottracker/app/main.py"
+            exit 1
+          fi
+          tag="v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists; nothing to do."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          subject=$(git log -1 --format=%s "$SHA")
+          git tag -a "$tag" "$SHA" -m "dotTracker $tag" -m "$subject" -m "See dottracker/CHANGELOG.md."
+          git push origin "refs/tags/$tag"
+          echo "Created $tag on $SHA"

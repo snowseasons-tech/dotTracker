@@ -47,7 +47,13 @@ API (any signed-in user; read-only):
 - `GET /api/v1/cdot/locate?lat=&lng=` returns `{milepoint, patrol, nearest_station}`. `milepoint` and `patrol` are `null` off the highway network.
 - `GET /api/v1/cdot/summary` returns the loaded datasets with row counts and load time.
 
-`GET /api/config` also reports the app version (`"version": "3.3.0"`).
+`GET /api/config` also reports the app version (`"version": "3.4.0"`).
+
+## Alert read state and live geofence updates (v3.4)
+
+- The **Alerts** tab lists unread alerts first, in bold, with an unread count and **Mark all read**. Selecting an alert flies to where it happened and marks it read. Read state is shared across the workspace (`POST /api/alerts/read` with `{"ids": [...]}`, or `{}` for all).
+- Creating, pausing, resuming or deleting a geofence updates every open map in the workspace right away.
+- **Releases are tagged automatically.** When CI passes on `main`, `.github/workflows/release-tag.yml` creates `vX.Y.Z` on that commit from `APP_VERSION` in `app/main.py`, if that tag doesn't exist yet. To release, bump `APP_VERSION` and add a `CHANGELOG.md` entry in the pull request.
 
 ## Alerts on the map, pausing geofences, and who placed a site (v3.3)
 

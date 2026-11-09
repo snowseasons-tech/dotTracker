@@ -95,7 +95,7 @@ function initMap(){if(map)return;map=new maplibregl.Map({container:'map',style:'
             .setHTML(observationPopup(checkpoint)).addTo(map);
     }
 })}
-function makeMarker(asset){let el=document.createElement('div');el.style.cssText='width:17px;height:17px;border-radius:50%;border:3px solid #eef7fb;box-shadow:0 0 0 5px #59d8bc44;cursor:pointer;background:#55dab9';let m=new maplibregl.Marker({element:el}).setLngLat([asset.lng,asset.lat]).setPopup(new maplibregl.Popup({offset:16}).setHTML(`<b>${esc(asset.name)}</b><br><span>${asset.status} · ${asset.speed||0} km/h</span>`)).addTo(map);el.onclick=()=>{selectedAsset=asset.id;renderSidebar()};return m}
+function makeMarker(asset){let el=document.createElement('div');el.style.cssText='width:17px;height:17px;border-radius:50%;border:3px solid #eef7fb;box-shadow:0 0 0 5px #59d8bc44;cursor:pointer;background:#55dab9';let m=new maplibregl.Marker({element:el}).setLngLat([asset.lng,asset.lat]).setPopup(new maplibregl.Popup({offset:16}).setHTML(`<div class="obs-popup"><b>${esc(asset.name)}</b><br><span>${esc(asset.status)} · ${esc(asset.speed||0)} km/h</span></div>`)).addTo(map);el.onclick=()=>{selectedAsset=asset.id;renderSidebar()};return m}
 function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
 let lastAssetsRefresh = null;
 async function refreshAssets() {
@@ -181,7 +181,7 @@ function renderTeam(root) {
     };
 }
 
-function renderSidebar(){let counts={moving:0,stopped:0,offline:0};assets.forEach(a=>counts[a.status]++);$('#movingCount').textContent=counts.moving;$('#stoppedCount').textContent=counts.stopped;$('#offlineCount').textContent=counts.offline;let root=$('#items');if(view==='team'){if(!root.querySelector('#teamPanel'))renderTeam(root);return}if(view==='safety'){if(!root.querySelector('#safetyPanel'))renderSafety(root);return}if(view==='dispatch'){renderDispatch(root);return}if(view==='stations'){renderStations(root);return}if(view==='history'&&root.querySelector('#tripForm'))return;if(view==='assets'){let q=$('#search').value.toLowerCase();let list=assets.filter(a=>a.name.toLowerCase().includes(q));root.innerHTML=list.map(a=>`<div class="asset ${a.id===selectedAsset?'sel':''}" data-id="${a.id}"><i class="assetdot ${a.status}"></i><div class="assetinfo"><div class="assetname">${esc(a.name)}</div><div class="assetmeta">${esc(a.kind)} · ${a.recorded_at?new Date(a.recorded_at).toLocaleTimeString():'No GPS fix'}</div></div><span class="speed">${a.speed?Math.round(a.speed)+' km/h':''}</span></div>`).join('')||'<div class="empty">No assets match your search.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{selectedAsset=+el.dataset.id;let a=assets.find(x=>x.id===selectedAsset);if(a?.lat)map.flyTo({center:[a.lng,a.lat],zoom:14});renderSidebar()});return}if(view==='observations'){root.innerHTML=observations.map(o=>`<div class="asset" data-id="${o.id}"><i class="assetdot" style="background:#70a7ff"></i><div class="assetinfo"><div class="assetname">${esc(o.note||(o.kind==='mobile_dot_checkpoint'?'Temporary inspection checkpoint':'Observation pin'))}</div><div class="assetmeta">${esc(o.author)} · ${new Date(o.observed_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No observations yet. Right-click the map to add one.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{let o=observations.find(x=>x.id==el.dataset.id);map.flyTo({center:[o.lng,o.lat],zoom:15})});return}if(view==='alerts'){api('/alerts').then(rows=>{if(view!=='alerts')return;root.innerHTML=rows.map(a=>`<div class="asset"><i class="assetdot" style="background:#f2b95d"></i><div class="assetinfo"><div class="assetname">${esc(a.message)}</div><div class="assetmeta">${new Date(a.created_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No alerts. Geofence events will appear here.</div>'});return}root.innerHTML='<div class="empty">Select an asset to browse up to 30 days of trip history.</div>'}
+function renderSidebar(){let counts={moving:0,stopped:0,offline:0};assets.forEach(a=>counts[a.status]++);$('#movingCount').textContent=counts.moving;$('#stoppedCount').textContent=counts.stopped;$('#offlineCount').textContent=counts.offline;let root=$('#items');if(view==='team'){if(!root.querySelector('#teamPanel'))renderTeam(root);return}if(view==='safety'){if(!root.querySelector('#safetyPanel'))renderSafety(root);return}if(view==='dispatch'){renderDispatch(root);return}if(view==='stations'){renderStations(root);return}if(view==='history'&&root.querySelector('#tripForm'))return;if(view==='assets'){let q=$('#search').value.toLowerCase();let list=assets.filter(a=>a.name.toLowerCase().includes(q));root.innerHTML=list.map(a=>`<div class="asset ${a.id===selectedAsset?'sel':''}" data-id="${a.id}"><i class="assetdot ${a.status}"></i><div class="assetinfo"><div class="assetname">${esc(a.name)}</div><div class="assetmeta">${esc(a.kind)} · ${a.recorded_at?new Date(a.recorded_at).toLocaleTimeString():'No GPS fix'}</div></div><span class="speed">${a.speed?Math.round(a.speed)+' km/h':''}</span></div>`).join('')||'<div class="empty">No assets match your search.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{selectedAsset=+el.dataset.id;let a=assets.find(x=>x.id===selectedAsset);if(a?.lat)map.flyTo({center:[a.lng,a.lat],zoom:14});renderSidebar()});return}if(view==='observations'){root.innerHTML=observations.map(o=>`<div class="asset" data-id="${o.id}"><i class="assetdot" style="background:#70a7ff"></i><div class="assetinfo"><div class="assetname">${esc(o.note||(o.kind==='mobile_dot_checkpoint'?'Temporary inspection checkpoint':'Observation pin'))}</div><div class="assetmeta">${esc(o.author)} · ${new Date(o.observed_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No observations yet. Right-click the map to add one.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{let o=observations.find(x=>x.id==el.dataset.id);map.flyTo({center:[o.lng,o.lat],zoom:15})});return}if(view==='alerts'){renderAlerts(root);return}root.innerHTML='<div class="empty">Select an asset to browse up to 30 days of trip history.</div>'}
 function pendingObservationQueue(){try{let value=JSON.parse(localStorage.getItem('dt_pending_observations')||'[]');if(!Array.isArray(value))return [];return value.filter(o=>o&&typeof o.client_id==='string'&&typeof o.note==='string'&&Number.isFinite(o.lat)&&o.lat>=-90&&o.lat<=90&&Number.isFinite(o.lng)&&o.lng>=-180&&o.lng<=180&&Number.isInteger(o.user_id)&&Number.isInteger(o.org_id)).slice(0,1000)}catch{return []}}
 function savePendingObservationQueue(queue){localStorage.setItem('dt_pending_observations',JSON.stringify(queue))}
 function initCheckpointLayer() {
@@ -916,6 +916,8 @@ async function connectLive() {
             if (message.type === 'position') { refreshAssets(); scheduleAlertRefresh(); }
             if (message.type === 'checkpoint_created' || message.type === 'sync_ready') refreshObs();
             if (message.type === 'inspection_site_changed' || message.type === 'sync_ready') refreshInspectionSites();
+            if (message.type === 'geofence_changed' || message.type === 'sync_ready') refreshGeofences();
+            if (message.type === 'alerts_read' && view === 'alerts') renderSidebar();
             if (message.type === 'sync_ready' || message.type === 'route_updated') {
                 const asset = $('#dispatchAsset');
                 if (!dispatchSync && view === 'dispatch' && asset?.value &&
@@ -1441,4 +1443,45 @@ function setAlertsVisible(visible) {
     if (!visible) alertPopup?.remove();
 }
 $('#layerAlerts').onclick = () => setAlertsVisible(!alertsVisible);
+// --- v3.4: alert read state in the Alerts tab ---
+async function markAlertsRead(ids) {
+    await api('/alerts/read', {method:'POST', body:JSON.stringify(ids ? {ids} : {})});
+}
+
+async function renderAlerts(root) {
+    let rows;
+    try {
+        rows = await api('/alerts');
+    } catch (error) {
+        if (view === 'alerts') root.innerHTML = `<div class="empty">${esc(error.message)}</div>`;
+        return;
+    }
+    if (view !== 'alerts') return;
+    alertDots = rows;
+    map?.getSource('alert-dots')?.setData(alertFeatures());
+    const unread = rows.filter(alert => !alert.read_at);
+    const ordered = [...unread, ...rows.filter(alert => alert.read_at)];
+    const header = rows.length
+        ? `<div class="asset" style="cursor:default"><div class="assetinfo"><div class="assetname" id="alertUnread">${unread.length ? `${unread.length} unread alert${unread.length === 1 ? '' : 's'}` : 'All alerts read'}</div></div>${unread.length ? '<button class="btn" id="alertsMarkAll">Mark all read</button>' : ''}</div>`
+        : '';
+    root.innerHTML = header + (ordered.map(alert => `<div class="asset" data-alert="${esc(alert.id)}" data-unread="${alert.read_at ? 'false' : 'true'}" style="${alert.read_at ? 'opacity:.6' : ''}"><i class="assetdot" style="background:${alert.event === 'exit' ? '#ff8a65' : '#f2b95d'}"></i><div class="assetinfo"><div class="assetname" style="font-weight:${alert.read_at ? 500 : 750}">${esc(alert.message)}</div><div class="assetmeta">${alert.asset_name ? esc(alert.asset_name) + ' · ' : ''}${new Date(alert.occurred_at || alert.created_at).toLocaleString()}${alert.read_at ? '' : ' · Unread'}</div></div></div>`).join('')
+        || '<div class="empty">No alerts. Geofence events will appear here.</div>');
+    root.querySelector('#alertsMarkAll')?.addEventListener('click', async event => {
+        event.currentTarget.disabled = true;
+        try { await markAlertsRead(); toast('All alerts marked read'); } catch (error) { toast(error.message); }
+        if (view === 'alerts') renderAlerts(root);
+    });
+    root.querySelectorAll('[data-alert]').forEach(el => el.onclick = async () => {
+        const alert = rows.find(item => String(item.id) === el.dataset.alert);
+        if (!alert) return;
+        if (Number.isFinite(alert.lat) && Number.isFinite(alert.lng)) {
+            if (!alertsVisible) setAlertsVisible(true);
+            map.flyTo({center:[alert.lng, alert.lat], zoom:15});
+        }
+        if (!alert.read_at) {
+            try { await markAlertsRead([alert.id]); } catch (error) { toast(error.message); return; }
+            if (view === 'alerts') renderAlerts(root);
+        }
+    });
+}
 async function start(){try{user=await api('/me');$('#userEmail').textContent=user.email;$('#teamTab').hidden=user.role!=='admin';setLogin(false);initMap();await Promise.all([refreshAssets(),refreshObs(),refreshInspectionSites(),refreshGeofences(),refreshAlertDots()]);flushPendingObservations();syncSafety()?.catch(()=>{});connectLive();clearInterval(assetPoll);clearInterval(observationPoll);assetPoll=setInterval(refreshAssets,15000);observationPoll=setInterval(refreshObs,60000);clearInterval(inspectionPoll);inspectionPoll=setInterval(()=>{refreshInspectionSites();refreshGeofences();refreshAlertDots()},60000)}catch(e){setLogin(true)}}if(token&&!inviteToken)start();

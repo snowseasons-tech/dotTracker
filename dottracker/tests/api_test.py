@@ -50,7 +50,7 @@ def test_schema_gate_requires_every_supported_migration():
 
 
 def test_demo_seed_is_hidden_in_production(client):
-    assert client.get('/api/config').json() == {'demo_seed_enabled': True, 'version': '3.3.0'}
+    assert client.get('/api/config').json() == {'demo_seed_enabled': True, 'version': '3.4.0'}
     assert demo_seed_enabled('development', 'true') is True
     assert demo_seed_enabled('development', 'false') is False
     assert demo_seed_enabled('production', 'true') is False
@@ -532,3 +532,41 @@ def test_inspection_site_reports_who_placed_it(client):
     assert site['placed_by'] == 'admin@dottracker.local' and site['placed_at']
     listed = [s for s in client.get('/api/v1/inspection-sites', headers=admin_headers).json() if s['id'] == site['id']]
     assert listed[0]['placed_by'] == 'admin@dottracker.local'
+
+
+def test_geofence_changes_are_broadcast_to_open_maps(client):
+    headers = login(client)
+    ticket = client.post('/api/live-ticket', headers=headers).json()['ticket']
+    with client.websocket_connect('/api/live', subprotocols=['dottracker', f'ticket.{ticket}']) as socket:
+        fence = client.post('/api/geofences', headers=headers, json={
+            'name': f'Broadcast {RUN}', 'shape': 'circle', 'geometry': {'lat': 39.0, 'lng': -105.5, 'radius_m': 300}}).json()
+        assert socket.receive_json() == {'type': 'geofence_changed', 'data': {'id': fence['id']}}
+        client.patch(f"/api/geofences/{fence['id']}", headers=headers, json={'enabled': False})
+        assert socket.receive_json() == {'type': 'geofence_changed', 'data': {'id': fence['id']}}
+        client.delete(f"/api/geofences/{fence['id']}", headers=headers)
+        assert socket.receive_json() == {'type': 'geofence_changed', 'data': {'id': fence['id']}}
+
+
+def test_alerts_can_be_marked_read_within_the_workspace(client):
+    headers = login(client)
+    fence = client.post('/api/geofences', headers=headers, json={
+        'name': f'Read test {RUN}', 'shape': 'circle', 'geometry': {'lat': 37.9, 'lng': -107.9, 'radius_m': 400}}).json()
+    def fix(lat, seconds_ago):
+        assert client.post('/api/ingest', json={'device_id': 'truck-01', 'token': 'demo-device-token', 'lat': lat, 'lng': -107.9,
+            'speed': 5, 'recorded_at': (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).isoformat()}).status_code == 200
+    fix(38.0, 3); fix(37.9, 2); fix(38.0, 1)  # enter, then exit
+    mine = lambda: [a for a in client.get('/api/alerts', headers=headers).json() if a['geofence_id'] == fence['id']]
+    first, second = mine()
+    assert first['read_at'] is None and second['read_at'] is None
+
+    outsider = login(client, f'viewer-isolation-{RUN}@test.invalid', 'test-viewer-password-long')
+    assert client.post('/api/alerts/read', headers=outsider, json={'ids': [first['id']]}).json() == {'marked_read': 0}
+    assert client.post('/api/alerts/read', headers=headers, json={'ids': []}).status_code == 422
+    assert client.post('/api/alerts/read', json={}).status_code == 401
+
+    assert client.post('/api/alerts/read', headers=headers, json={'ids': [first['id']]}).json() == {'marked_read': 1}
+    by_id = {a['id']: a for a in mine()}
+    assert by_id[first['id']]['read_at'] and by_id[second['id']]['read_at'] is None
+    assert client.post('/api/alerts/read', headers=headers, json={'ids': [first['id']]}).json() == {'marked_read': 0}
+    assert client.post('/api/alerts/read', headers=headers, json={}).json()['marked_read'] >= 1
+    assert all(a['read_at'] for a in mine())
