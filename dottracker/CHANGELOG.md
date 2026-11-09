@@ -1,5 +1,13 @@
 # Changelog
 
+## 3.4.0 — Readable popups, alert read state, live geofence updates, automatic release tags
+
+- Fixed: the vehicle popup showed light text on a white background, inheriting the page's dark-theme colour. Every map popup now uses dark text.
+- **Alert read state:** new `POST /api/alerts/read` (`{"ids": [...]}`, or `{}` for all unread). The Alerts tab shows unread first with a count and **Mark all read**, and selecting an alert flies to it and marks it read. Read state is workspace-wide, matching `alerts.read_at`.
+- **Live geofence updates:** creating, pausing, resuming or deleting a geofence broadcasts `geofence_changed`, and open maps refresh their geofence layer immediately instead of within a minute.
+- **Automatic release tags:** `.github/workflows/release-tag.yml` runs after **dotTracker CI** passes on a push to `main` and tags the commit `v<APP_VERSION>` if that tag is new.
+- Tests for the broadcasts and alert read state (workspace-scoped, sign-in required).
+
 ## 3.3.0 — Alerts on the map, pausing geofences, who placed a site
 
 - **Alerts on the map:** the new **⚠ Alerts** layer shows the last 24 hours of geofence alerts at the fix that crossed the fence, with a popup for the alert, asset and time. `GET /api/alerts` now also returns `asset_name`, `event`, `occurred_at`, `lat` and `lng`.
