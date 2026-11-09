@@ -893,6 +893,19 @@ function scheduleReconnect(generation) {
     reconnectTimer = setTimeout(connectLive, 3000);
 }
 
+// Truthful connection state: a dropped network can leave the socket looking open for a long
+// time, so trust the browser's own offline/online events as well.
+window.addEventListener('offline', () => {
+    if (!token) return;
+    stopLive();
+    setLiveState('offline', 'Disconnected');
+});
+window.addEventListener('online', () => {
+    if (!token || !user) return;
+    setLiveState('connecting', 'Connecting…');
+    connectLive();
+});
+
 async function connectLive() {
     stopLive();
     if (!token) return;

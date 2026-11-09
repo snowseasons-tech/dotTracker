@@ -47,7 +47,16 @@ API (any signed-in user; read-only):
 - `GET /api/v1/cdot/locate?lat=&lng=` returns `{milepoint, patrol, nearest_station}`. `milepoint` and `patrol` are `null` off the highway network.
 - `GET /api/v1/cdot/summary` returns the loaded datasets with row counts and load time.
 
-`GET /api/config` also reports the app version (`"version": "3.5.0"`).
+`GET /api/config` also reports the app version (`"version": "3.6.0"`).
+
+## Browser acceptance checks (v3.6)
+
+`tests/browser/acceptance.js` runs the browser checks from `STAGING_ACCEPTANCE.md` section 8 against a running dotTracker you're allowed to change: connection state when offline (U2), errors when the API is down (U4), offline safety checklist sync (U5), keyboard-only forms (U6), and no horizontal scroll on phones (U7). It creates an invite, a geofence and a checklist.
+
+```bash
+npm install playwright@1 && npx playwright install chromium
+DOTTRACKER_URL=http://localhost:8000 DOTTRACKER_EMAIL=admin@dottracker.local DOTTRACKER_PASSWORD=dottracker-demo node tests/browser/acceptance.js
+```
 
 ## Base map and per-person alert reads (v3.5)
 
