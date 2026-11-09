@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.5.0 — Configurable base map and per-person alert reads
+
+- **Base map:** new `MAP_STYLE_URL` setting. The default is OpenFreeMap; `offline` serves a built-in map (Colorado outline and CDOT highways drawn from the milepoints) that needs no outside network; or use any `https://` style from your own tile server. `MAP_EXTRA_ORIGINS` lists any other tile, glyph or sprite hosts. The CSP's `connect-src` now allows only the configured origins, and the API refuses to start on a non-HTTPS value. New `GET /api/v1/map/offline-style.json` and `GET /api/v1/map/highways.geojson` (signed in).
+- **Per-person alert reads:** migration `0011-alert-reads` adds `alert_reads`. `POST /api/alerts/read` and `GET /api/alerts` now use the signed-in person's own read state. Alerts already read workspace-wide stay read for everyone who was a member.
+- Tests for per-person reads, map settings validation, the offline style and highways, and the CSP.
+
 ## 3.4.0 — Readable popups, alert read state, live geofence updates, automatic release tags
 
 - Fixed: the vehicle popup showed light text on a white background, inheriting the page's dark-theme colour. Every map popup now uses dark text.

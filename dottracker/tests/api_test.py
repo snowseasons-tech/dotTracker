@@ -16,7 +16,7 @@ from uuid import uuid4 as _uuid4  # noqa: E402
 
 RUN = _uuid4().hex[:8]  # test-created accounts get a per-run suffix so the suite can rerun on one database
 
-from app.main import app, pwd, SUPPORTED_SCHEMA_VERSIONS, missing_schema_versions, demo_seed_enabled  # noqa: E402
+from app.main import map_settings, app, pwd, SUPPORTED_SCHEMA_VERSIONS, missing_schema_versions, demo_seed_enabled  # noqa: E402
 
 
 @pytest.fixture(scope='session')
@@ -50,7 +50,7 @@ def test_schema_gate_requires_every_supported_migration():
 
 
 def test_demo_seed_is_hidden_in_production(client):
-    assert client.get('/api/config').json() == {'demo_seed_enabled': True, 'version': '3.4.0'}
+    assert client.get('/api/config').json() == {'demo_seed_enabled': True, 'version': '3.5.0', 'map_style': 'https://tiles.openfreemap.org/styles/dark'}
     assert demo_seed_enabled('development', 'true') is True
     assert demo_seed_enabled('development', 'false') is False
     assert demo_seed_enabled('production', 'true') is False
@@ -570,3 +570,48 @@ def test_alerts_can_be_marked_read_within_the_workspace(client):
     assert client.post('/api/alerts/read', headers=headers, json={'ids': [first['id']]}).json() == {'marked_read': 0}
     assert client.post('/api/alerts/read', headers=headers, json={}).json()['marked_read'] >= 1
     assert all(a['read_at'] for a in mine())
+
+
+def test_alert_read_state_is_per_person(client):
+    admin_headers = login(client)
+    invite = client.post('/api/invites', headers=admin_headers, json={'email': f'reader-{RUN}@test.invalid', 'role': 'viewer'}).json()
+    assert client.post('/api/invites/accept', json={'token': invite['invite_token'], 'password': 'reader-password-long-1'}).status_code == 201
+    reader = login(client, f'reader-{RUN}@test.invalid', 'reader-password-long-1')
+    fence = client.post('/api/geofences', headers=admin_headers, json={
+        'name': f'Per person {RUN}', 'shape': 'circle', 'geometry': {'lat': 37.5, 'lng': -105.5, 'radius_m': 400}}).json()
+    for lat, ago in [(37.6, 3), (37.5, 2)]:
+        client.post('/api/ingest', json={'device_id': 'truck-01', 'token': 'demo-device-token', 'lat': lat, 'lng': -105.5,
+            'speed': 5, 'recorded_at': (datetime.now(timezone.utc) - timedelta(seconds=ago)).isoformat()})
+    pick = lambda headers: [a for a in client.get('/api/alerts', headers=headers).json() if a['geofence_id'] == fence['id']]
+    (alert,) = pick(admin_headers)
+    assert client.post('/api/alerts/read', headers=admin_headers, json={}).json()['marked_read'] >= 1
+    assert pick(admin_headers)[0]['read_at'] is not None
+    assert pick(reader)[0]['read_at'] is None  # the admin reading it does not mark it read for anyone else
+    assert client.post('/api/alerts/read', headers=reader, json={'ids': [alert['id']]}).json() == {'marked_read': 1}
+    assert pick(reader)[0]['read_at'] is not None
+
+
+def test_map_style_settings_validate_and_drive_the_csp():
+    assert map_settings('', '') == ('https://tiles.openfreemap.org/styles/dark', ['https://tiles.openfreemap.org', 'https://*.openfreemap.org'])
+    assert map_settings('offline', '') == ('/api/v1/map/offline-style.json', [])
+    style, origins = map_settings('https://maps.example.org/styles/basic.json', 'https://tiles.example.org, https://fonts.example.org/')
+    assert style == 'https://maps.example.org/styles/basic.json'
+    assert origins == ['https://maps.example.org', 'https://tiles.example.org', 'https://fonts.example.org']
+    for bad_style, bad_extra in [('http://maps.example.org/style.json', ''), ('https://user:pw@maps.example.org/s.json', ''),
+                                 ('javascript:alert(1)', ''), ('offline', 'http://tiles.example.org'), ('offline', 'https://tiles.example.org/path')]:
+        with pytest.raises(RuntimeError):
+            map_settings(bad_style, bad_extra)
+
+
+def test_offline_map_style_and_highways(client):
+    style = client.get('/api/v1/map/offline-style.json')
+    assert style.status_code == 200
+    body = style.json()
+    assert body['version'] == 8 and body['sources']['highways']['data'] == '/api/v1/map/highways.geojson'
+    assert {layer['id'] for layer in body['layers']} >= {'background', 'colorado-outline', 'highways'}
+    assert client.get('/api/v1/map/highways.geojson').status_code == 401
+    highways = client.get('/api/v1/map/highways.geojson', headers=login(client)).json()
+    assert highways['type'] == 'FeatureCollection'
+    assert all(f['geometry']['type'] == 'LineString' and len(f['geometry']['coordinates']) >= 2 for f in highways['features'])
+    csp = client.get('/health').headers['content-security-policy']
+    assert "connect-src 'self' wss: https://tiles.openfreemap.org https://*.openfreemap.org;" in csp

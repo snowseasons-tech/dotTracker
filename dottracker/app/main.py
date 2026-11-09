@@ -40,7 +40,34 @@ SUPPORTED_SCHEMA_VERSIONS=frozenset({
     '0008-safety-checklists',
     '0009-cdot-stations',
     '0010-inspection-sites',
+    '0011-alert-reads',
 })
+
+# Base map: OpenFreeMap by default, any HTTPS style (e.g. a self-hosted tile server),
+# or 'offline' for the built-in style that needs no outside network.
+DEFAULT_MAP_STYLE='https://tiles.openfreemap.org/styles/dark'
+OFFLINE_MAP_STYLE='/api/v1/map/offline-style.json'
+
+def map_settings(style=None, extra=None):
+    style=(style if style is not None else os.getenv('MAP_STYLE_URL', DEFAULT_MAP_STYLE)).strip() or DEFAULT_MAP_STYLE
+    extra=extra if extra is not None else os.getenv('MAP_EXTRA_ORIGINS', '')
+    origins=[]
+    if style.lower()=='offline':
+        style=OFFLINE_MAP_STYLE
+    else:
+        parsed=urlsplit(style)
+        if parsed.scheme!='https' or not parsed.hostname or parsed.username or parsed.password:
+            raise RuntimeError('MAP_STYLE_URL must be offline or an https:// URL without credentials')
+        origins.append(f'https://{parsed.netloc}')
+        if style==DEFAULT_MAP_STYLE: origins.append('https://*.openfreemap.org')
+    for item in filter(None,(value.strip() for value in extra.split(','))):
+        parsed=urlsplit(item)
+        if parsed.scheme!='https' or not parsed.hostname or parsed.path not in ('','/') or parsed.query or parsed.username:
+            raise RuntimeError('MAP_EXTRA_ORIGINS must be a comma-separated list of https:// origins')
+        origins.append(f'https://{parsed.netloc}')
+    return style, list(dict.fromkeys(origins))
+
+MAP_STYLE, MAP_ORIGINS = map_settings()
 
 def missing_schema_versions(applied_versions):
     return SUPPORTED_SCHEMA_VERSIONS - set(applied_versions)
@@ -78,7 +105,7 @@ async def lifespan(app):
             await asyncio.sleep(1)
     else: raise RuntimeError('Database unavailable')
     yield
-APP_VERSION='3.4.0'
+APP_VERSION='3.5.0'
 app=FastAPI(title='dotTracker API', version=APP_VERSION, lifespan=lifespan,
             docs_url=None if IS_PRODUCTION else '/docs', redoc_url=None if IS_PRODUCTION else '/redoc',
             openapi_url=None if IS_PRODUCTION else '/openapi.json')
@@ -91,7 +118,7 @@ async def security_headers(request, call_next):
     response.headers['X-Frame-Options']='DENY'
     response.headers['Referrer-Policy']='no-referrer'
     response.headers['Permissions-Policy']='camera=(), microphone=(), geolocation=()'
-    response.headers['Content-Security-Policy']="default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; worker-src 'self' blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' wss: https://tiles.openfreemap.org https://*.openfreemap.org; font-src 'self' data: https://fonts.gstatic.com"
+    response.headers['Content-Security-Policy']="default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; worker-src 'self' blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' wss:"+''.join(' '+origin for origin in MAP_ORIGINS)+"; font-src 'self' data: https://fonts.gstatic.com"
     response.headers['Cache-Control']='no-store' if request.url.path.startswith('/api/') else 'no-cache'
     if request.url.scheme=='https': response.headers['Strict-Transport-Security']='max-age=31536000'
     return response
@@ -531,6 +558,48 @@ def cdot_locate(lat: float = Query(ge=-90, le=90, allow_inf_nan=False), lng: flo
     return {'milepoint': milepoint, 'patrol': patrol, 'nearest_station': station}
 
 
+# --- v3.5: built-in offline base map (Colorado outline + CDOT highways from milepoints) ---
+INTERSTATE_ROUTES = ['025A', '070A', '076A', '225A', '270A']
+
+
+@app.get('/api/v1/map/offline-style.json')
+def offline_map_style():
+    # Static style; the highway lines it references need a signed-in user.
+    colorado = [[-109.05, 37.0], [-109.05, 41.0], [-102.04, 41.0], [-102.04, 37.0], [-109.05, 37.0]]
+    return {
+        'version': 8, 'name': 'dotTracker offline',
+        'sources': {
+            'colorado': {'type': 'geojson', 'data': {'type': 'Feature', 'properties': {}, 'geometry': {'type': 'Polygon', 'coordinates': [colorado]}}},
+            'highways': {'type': 'geojson', 'data': '/api/v1/map/highways.geojson'},
+        },
+        'layers': [
+            {'id': 'background', 'type': 'background', 'paint': {'background-color': '#0d1620'}},
+            {'id': 'colorado-fill', 'type': 'fill', 'source': 'colorado', 'paint': {'fill-color': '#111d29'}},
+            {'id': 'colorado-outline', 'type': 'line', 'source': 'colorado', 'paint': {'line-color': '#2c4154', 'line-width': 1.5}},
+            {'id': 'highways', 'type': 'line', 'source': 'highways', 'layout': {'line-join': 'round', 'line-cap': 'round'},
+             'paint': {'line-color': ['match', ['get', 'route'], INTERSTATE_ROUTES, '#5d7f99', '#3b5468'],
+                       'line-width': ['interpolate', ['linear'], ['zoom'], 6, ['match', ['get', 'route'], INTERSTATE_ROUTES, 1.6, 0.8],
+                                      12, ['match', ['get', 'route'], INTERSTATE_ROUTES, 5, 2.5]]}},
+        ],
+    }
+
+
+@app.get('/api/v1/map/highways.geojson')
+def offline_highways(c=Depends(db), u=Depends(current_user)):
+    # Join each route's milepoints in order; a gap over 1.5 miles starts a new line
+    # so discontinuous routes are not drawn across the map.
+    row = c.execute('''WITH m AS (
+            SELECT route, refpt, geom,
+                   CASE WHEN refpt - lag(refpt) OVER (PARTITION BY route ORDER BY refpt) > 1.5 THEN 1 ELSE 0 END AS brk
+            FROM cdot_milepoints),
+        g AS (SELECT route, refpt, geom, sum(brk) OVER (PARTITION BY route ORDER BY refpt) AS seg FROM m),
+        l AS (SELECT route, ST_MakeLine(geom ORDER BY refpt) AS line FROM g GROUP BY route, seg HAVING count(*) > 1)
+        SELECT json_build_object('type', 'FeatureCollection', 'features', COALESCE(json_agg(json_build_object(
+            'type', 'Feature', 'properties', json_build_object('route', route),
+            'geometry', ST_AsGeoJSON(line, 5)::json)), '[]'::json)) AS fc FROM l''').fetchone()
+    return row['fc']
+
+
 # --- v3.1: non-permanent safety inspection stations (org-scoped; admins place and end them) ---
 INSPECTION_SITE_COLUMNS = ("""id, name, agency, highway, milepost::float AS milepost, direction, notes, lat, lng,
     starts_at, ends_at, CASE WHEN starts_at > clock_timestamp() THEN 'scheduled' ELSE 'active' END AS status,
@@ -639,28 +708,29 @@ def safety_history(c=Depends(db), u=Depends(admin)):
 @app.get('/api/alerts')
 def alerts(c=Depends(db),u=Depends(current_user)):
     # lat/lng/occurred_at come from the fix that crossed the fence, so alerts can be placed on the map.
-    return c.execute('''SELECT a.id, a.asset_id, a.geofence_id, a.message, a.created_at, a.read_at,
+    # read_at is the signed-in person's own read time for each alert.
+    return c.execute('''SELECT a.id, a.asset_id, a.geofence_id, a.message, a.created_at, r.read_at,
             s.name AS asset_name, e.event, e.occurred_at, p.lat, p.lng
         FROM alerts a
+        LEFT JOIN alert_reads r ON r.alert_id = a.id AND r.user_id = %(user)s
         LEFT JOIN assets s ON s.id = a.asset_id AND s.org_id = a.org_id
         LEFT JOIN geofence_events e ON e.id = a.event_id AND e.org_id = a.org_id
         LEFT JOIN positions p ON p.id = e.position_id AND p.org_id = a.org_id
-        WHERE a.org_id=%s ORDER BY a.created_at DESC LIMIT 100''',(u['org_id'],)).fetchall()
+        WHERE a.org_id=%(org)s ORDER BY a.created_at DESC LIMIT 100''',{'org':u['org_id'],'user':u['id']}).fetchall()
 
 class AlertsRead(StrictModel):
     ids: Optional[list[int]] = Field(default=None, min_length=1, max_length=500)
 
 
 @app.post('/api/alerts/read')
-def mark_alerts_read(body: AlertsRead, background_tasks: BackgroundTasks, c=Depends(db), u=Depends(current_user)):
-    # Without ids, every unread alert in the workspace is marked read.
-    if body.ids is None:
-        cur = c.execute('UPDATE alerts SET read_at=now() WHERE org_id=%s AND read_at IS NULL', (u['org_id'],))
-    else:
-        cur = c.execute('UPDATE alerts SET read_at=now() WHERE org_id=%s AND read_at IS NULL AND id = ANY(%s)', (u['org_id'], body.ids))
+def mark_alerts_read(body: AlertsRead, c=Depends(db), u=Depends(current_user)):
+    # Marks alerts read for the signed-in person only. Without ids, every alert in
+    # the workspace that this person has not read yet.
+    cur = c.execute('''INSERT INTO alert_reads (alert_id, user_id, org_id)
+        SELECT a.id, %(user)s, %(org)s FROM alerts a
+        WHERE a.org_id = %(org)s AND (%(ids)s::bigint[] IS NULL OR a.id = ANY(%(ids)s::bigint[]))
+        ON CONFLICT DO NOTHING''', {'user': u['id'], 'org': u['org_id'], 'ids': body.ids})
     c.commit()
-    if cur.rowcount:
-        background_tasks.add_task(hub.publish, u['org_id'], {'type': 'alerts_read'})
     return {'marked_read': cur.rowcount}
 
 
@@ -739,7 +809,7 @@ def demo_seed_enabled(app_env=APP_ENV, setting=None):
 
 @app.get('/api/config')
 def client_config():
-    return {'demo_seed_enabled': demo_seed_enabled(), 'version': APP_VERSION}
+    return {'demo_seed_enabled': demo_seed_enabled(), 'version': APP_VERSION, 'map_style': MAP_STYLE}
 
 @app.post('/api/dev/seed')
 def seed(c=Depends(db)):
