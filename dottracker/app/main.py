@@ -78,7 +78,7 @@ async def lifespan(app):
             await asyncio.sleep(1)
     else: raise RuntimeError('Database unavailable')
     yield
-APP_VERSION='3.2.1'
+APP_VERSION='3.3.0'
 app=FastAPI(title='dotTracker API', version=APP_VERSION, lifespan=lifespan,
             docs_url=None if IS_PRODUCTION else '/docs', redoc_url=None if IS_PRODUCTION else '/redoc',
             openapi_url=None if IS_PRODUCTION else '/openapi.json')
@@ -419,6 +419,19 @@ def save_geofence(b: GeofenceIn, c, org_id: int):
             raise HTTPException(422, 'polygon must be a valid non-self-intersecting shape')
         b.geometry['coordinates'] = pts
     row=c.execute('INSERT INTO geofences(org_id,name,shape,geometry) VALUES(%s,%s,%s,%s) RETURNING id,name,shape,geometry,enabled',(org_id,b.name,b.shape,json.dumps(b.geometry))).fetchone();c.commit();return row
+class GeofenceUpdate(StrictModel):
+    enabled: bool
+
+
+@app.patch('/api/geofences/{fid}')
+def update_geofence(body: GeofenceUpdate, fid: int = ApiPath(gt=0), c=Depends(db), u=Depends(admin)):
+    row = c.execute('UPDATE geofences SET enabled=%s WHERE id=%s AND org_id=%s RETURNING id,name,shape,geometry,enabled',
+                    (body.enabled, fid, u['org_id'])).fetchone()
+    if not row: raise HTTPException(404, 'Geofence not found')
+    c.commit()
+    return row
+
+
 @app.delete('/api/geofences/{fid}')
 def delete_geofence(fid:int,c=Depends(db),u=Depends(admin)):
     cur=c.execute('DELETE FROM geofences WHERE id=%s AND org_id=%s',(fid,u['org_id']));c.commit()
@@ -509,7 +522,8 @@ def cdot_locate(lat: float = Query(ge=-90, le=90, allow_inf_nan=False), lng: flo
 
 # --- v3.1: non-permanent safety inspection stations (org-scoped; admins place and end them) ---
 INSPECTION_SITE_COLUMNS = ("""id, name, agency, highway, milepost::float AS milepost, direction, notes, lat, lng,
-    starts_at, ends_at, CASE WHEN starts_at > clock_timestamp() THEN 'scheduled' ELSE 'active' END AS status""")
+    starts_at, ends_at, CASE WHEN starts_at > clock_timestamp() THEN 'scheduled' ELSE 'active' END AS status,
+    created_at AS placed_at, (SELECT email FROM users WHERE users.id = inspection_sites.created_by) AS placed_by""")
 MAX_INSPECTION_WINDOW = timedelta(days=30)
 
 
@@ -613,7 +627,14 @@ def safety_history(c=Depends(db), u=Depends(admin)):
 
 @app.get('/api/alerts')
 def alerts(c=Depends(db),u=Depends(current_user)):
-    return c.execute('SELECT id,asset_id,geofence_id,message,created_at,read_at FROM alerts WHERE org_id=%s ORDER BY created_at DESC LIMIT 100',(u['org_id'],)).fetchall()
+    # lat/lng/occurred_at come from the fix that crossed the fence, so alerts can be placed on the map.
+    return c.execute('''SELECT a.id, a.asset_id, a.geofence_id, a.message, a.created_at, a.read_at,
+            s.name AS asset_name, e.event, e.occurred_at, p.lat, p.lng
+        FROM alerts a
+        LEFT JOIN assets s ON s.id = a.asset_id AND s.org_id = a.org_id
+        LEFT JOIN geofence_events e ON e.id = a.event_id AND e.org_id = a.org_id
+        LEFT JOIN positions p ON p.id = e.position_id AND p.org_id = a.org_id
+        WHERE a.org_id=%s ORDER BY a.created_at DESC LIMIT 100''',(u['org_id'],)).fetchall()
 
 @app.post('/api/live-ticket')
 def live_ticket(c=Depends(db),u=Depends(current_user)):

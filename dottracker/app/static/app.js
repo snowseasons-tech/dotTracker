@@ -1,7 +1,7 @@
 import * as maplibregl from '/static/vendor/maplibre-gl-6.16.0/maplibre-gl.mjs';
 const API='/api';let token=localStorage.getItem('dt_token'),refreshToken=localStorage.getItem('dt_refresh'),refreshPromise=null,user=null,map=null,assets=[],observations=[],selectedAsset=null,view='assets',assetsVisible=true,obsVisible=true,pendingPoint=null,observationCapturedAt=null,markers=new Map(),obsMarkers=[],ws=null;
 const $=s=>document.querySelector(s);const inviteToken = new URLSearchParams(location.hash.slice(1)).get('invite');function authHeaders(){return {'Authorization':'Bearer '+token,'Content-Type':'application/json'}}async function renewSession(){if(refreshPromise)return refreshPromise;refreshPromise=(async()=>{let r=await fetch(API+'/auth/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:refreshToken})});if(!r.ok)throw Error('Session expired');let d=await r.json();token=d.access_token;refreshToken=d.refresh_token;localStorage.setItem('dt_token',token);localStorage.setItem('dt_refresh',refreshToken)})().finally(()=>{refreshPromise=null});return refreshPromise}async function api(path,opts={},retried=false){let r=await fetch(API+path,{...opts,headers:{...authHeaders(),...(opts.headers||{})}});if(r.status===401){if(!retried&&refreshToken&&!path.includes('/auth/')){try{await renewSession();return api(path,opts,true)}catch{}}logout();throw Error('Session expired')}if(!r.ok){let e=await r.json().catch(()=>({detail:'Request failed'}));throw Error(e.detail||'Request failed')}return r.status===204?null:r.json()}
-function toast(msg){let t=$('#toast');t.textContent=msg;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}function setLogin(on){$('#login').style.display=on?'grid':'none'}function logout(){cancelFenceDrawing();clearTrip();setPinMode(false);closeModal();let oldRefresh=refreshToken;if(oldRefresh)fetch(API+'/auth/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:oldRefresh})}).catch(()=>{});localStorage.removeItem('dt_token');localStorage.removeItem('dt_refresh');token=null;refreshToken=null;user=null;observations=[];cdotStations=[];cdotLoaded=null;map?.getSource('cdot-stations')?.setData(cdotFeatures());obsMarkers.forEach(marker=>marker.remove());obsMarkers=[];map?.getSource('checkpoints')?.setData(checkpointFeatures());view='assets';$('#items').replaceChildren();document.querySelectorAll('.tab').forEach(tab=>tab.classList.toggle('active',tab.dataset.view===view));setLogin(true);stopLive();setLiveState('offline','Disconnected');clearInterval(assetPoll);clearInterval(observationPoll);clearInterval(inspectionPoll);inspectionSites=[];map?.getSource('inspection-sites')?.setData(inspectionFeatures());geofences=[];geofencePopup?.remove();map?.getSource('geofences')?.setData(geofenceFeatures())}
+function toast(msg){let t=$('#toast');t.textContent=msg;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',3500)}function setLogin(on){$('#login').style.display=on?'grid':'none'}function logout(){cancelFenceDrawing();clearTrip();setPinMode(false);closeModal();let oldRefresh=refreshToken;if(oldRefresh)fetch(API+'/auth/logout',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({refresh_token:oldRefresh})}).catch(()=>{});localStorage.removeItem('dt_token');localStorage.removeItem('dt_refresh');token=null;refreshToken=null;user=null;observations=[];cdotStations=[];cdotLoaded=null;map?.getSource('cdot-stations')?.setData(cdotFeatures());obsMarkers.forEach(marker=>marker.remove());obsMarkers=[];map?.getSource('checkpoints')?.setData(checkpointFeatures());view='assets';$('#items').replaceChildren();document.querySelectorAll('.tab').forEach(tab=>tab.classList.toggle('active',tab.dataset.view===view));setLogin(true);stopLive();setLiveState('offline','Disconnected');clearInterval(assetPoll);clearInterval(observationPoll);clearInterval(inspectionPoll);inspectionSites=[];map?.getSource('inspection-sites')?.setData(inspectionFeatures());geofences=[];geofencePopup?.remove();map?.getSource('geofences')?.setData(geofenceFeatures());alertDots=[];alertPopup?.remove();map?.getSource('alert-dots')?.setData(alertFeatures())}
 async function signIn(){try{let data=await fetch(API+'/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email:$('#email').value,password:$('#password').value})}).then(async r=>{let d=await r.json();if(!r.ok)throw Error(d.detail||'Sign in failed');return d});token=data.access_token;refreshToken=data.refresh_token;localStorage.setItem('dt_token',token);localStorage.setItem('dt_refresh',refreshToken);start()}catch(e){$('#loginError').textContent=e.message}}
 $('#loginBtn').onclick=signIn;$('#password').onkeydown=e=>{if(e.key==='Enter')signIn()};
 async function configureDemoControls(){
@@ -78,7 +78,7 @@ $('#inviteBack').onclick = () => {
         start();
     }
 };
-function initMap(){if(map)return;map=new maplibregl.Map({container:'map',style:'https://tiles.openfreemap.org/styles/dark',center:[-104.99,39.739],zoom:11});map.addControl(new maplibregl.NavigationControl(),'top-right');map.on('load',()=>{initGeofenceLayer();initCheckpointLayer();initCdotLayer();initInspectionLayer();refreshAssets();refreshObs()});map.on('contextmenu', e => {if (!fenceDraft) openObservation([e.lngLat.lng, e.lngLat.lat])});map.on('click', e => {
+function initMap(){if(map)return;map=new maplibregl.Map({container:'map',style:'https://tiles.openfreemap.org/styles/dark',center:[-104.99,39.739],zoom:11});map.addControl(new maplibregl.NavigationControl(),'top-right');map.on('load',()=>{initGeofenceLayer();initCheckpointLayer();initAlertLayer();initCdotLayer();initInspectionLayer();refreshAssets();refreshObs()});map.on('contextmenu', e => {if (!fenceDraft) openObservation([e.lngLat.lng, e.lngLat.lat])});map.on('click', e => {
     if (fenceDraft) {
         addFenceCorner(e.lngLat.wrap());
         return;
@@ -913,7 +913,7 @@ async function connectLive() {
         socket.onmessage = event => {
             if (ws !== socket) return;
             const message = JSON.parse(event.data);
-            if (message.type === 'position') refreshAssets();
+            if (message.type === 'position') { refreshAssets(); scheduleAlertRefresh(); }
             if (message.type === 'checkpoint_created' || message.type === 'sync_ready') refreshObs();
             if (message.type === 'inspection_site_changed' || message.type === 'sync_ready') refreshInspectionSites();
             if (message.type === 'sync_ready' || message.type === 'route_updated') {
@@ -1150,6 +1150,7 @@ function openInspectionPopup(site) {
     if (inspectionLocation(live)) line(inspectionLocation(live));
     line(inspectionWindow(live));
     if (live.notes) line(live.notes);
+    if (live.placed_by) line(`Placed by ${live.placed_by} · ${formatWhen(live.placed_at)}`).style.opacity = '0.75';
     if (user?.role === 'admin') {
         const end = document.createElement('button');
         end.className = 'btn';
@@ -1290,7 +1291,7 @@ function initGeofenceLayer() {
     map.on('click', 'geofence-fill', e => {
         if (pinMode || fenceDraft) return;
         // A point or symbol above the fence gets the click instead.
-        const above = map.queryRenderedFeatures(e.point, {layers:['checkpoint-symbols', 'inspection-site-symbols', 'cdot-station-dots'].filter(id => map.getLayer(id))});
+        const above = map.queryRenderedFeatures(e.point, {layers:['checkpoint-symbols', 'inspection-site-symbols', 'cdot-station-dots', 'alert-dots'].filter(id => map.getLayer(id))});
         if (above.length) return;
         const fence = geofences.find(item => String(item.id) === e.features?.[0]?.properties.id);
         if (fence) openGeofencePopup(fence, e.lngLat);
@@ -1322,6 +1323,26 @@ function openGeofencePopup(fence, lngLat) {
     line(geofenceSummary(fence));
     line(fence.enabled === false ? 'Alerts paused' : 'Enter and exit alerts on');
     if (user?.role === 'admin') {
+        const paused = fence.enabled === false;
+        const toggle = document.createElement('button');
+        toggle.className = 'btn';
+        toggle.style.marginTop = '8px';
+        toggle.style.marginRight = '6px';
+        toggle.textContent = paused ? 'Resume alerts' : 'Pause alerts';
+        toggle.onclick = async () => {
+            toggle.disabled = true;
+            try {
+                const updated = await api(`/geofences/${fence.id}`, {method:'PATCH', body:JSON.stringify({enabled:paused})});
+                toast(updated.enabled ? 'Geofence alerts resumed' : 'Geofence alerts paused');
+                await refreshGeofences();
+                const fresh = geofences.find(item => item.id === fence.id);
+                if (fresh) openGeofencePopup(fresh, lngLat); else geofencePopup?.remove();
+            } catch (error) {
+                toggle.disabled = false;
+                toast(error.message);
+            }
+        };
+        el.append(toggle);
         const remove = document.createElement('button');
         remove.className = 'btn';
         remove.style.marginTop = '8px';
@@ -1353,4 +1374,71 @@ function setGeofencesVisible(visible) {
     if (!visible) geofencePopup?.remove();
 }
 $('#layerFences').onclick = () => setGeofencesVisible(!geofencesVisible);
-async function start(){try{user=await api('/me');$('#userEmail').textContent=user.email;$('#teamTab').hidden=user.role!=='admin';setLogin(false);initMap();await Promise.all([refreshAssets(),refreshObs(),refreshInspectionSites(),refreshGeofences()]);flushPendingObservations();syncSafety()?.catch(()=>{});connectLive();clearInterval(assetPoll);clearInterval(observationPoll);assetPoll=setInterval(refreshAssets,15000);observationPoll=setInterval(refreshObs,60000);clearInterval(inspectionPoll);inspectionPoll=setInterval(()=>{refreshInspectionSites();refreshGeofences()},60000)}catch(e){setLogin(true)}}if(token&&!inviteToken)start();
+// --- v3.3: geofence alerts on the map ---
+const ALERT_WINDOW_MS = 24 * 3600000;
+let alertDots = [], alertsVisible = true, alertPopup = null, alertRefreshTimer = null;
+
+function recentAlertDots() {
+    const since = Date.now() - ALERT_WINDOW_MS;
+    return alertDots.filter(alert => Number.isFinite(alert.lat) && Number.isFinite(alert.lng)
+        && Date.parse(alert.occurred_at || alert.created_at) >= since);
+}
+
+function alertFeatures() {
+    return {
+        type:'FeatureCollection',
+        features:recentAlertDots().map(alert => ({
+            type:'Feature',
+            geometry:{type:'Point', coordinates:[alert.lng, alert.lat]},
+            properties:{id:String(alert.id), event:alert.event || ''}
+        }))
+    };
+}
+
+function initAlertLayer() {
+    map.addSource('alert-dots', {type:'geojson', data:alertFeatures()});
+    map.addLayer({id:'alert-dots', type:'circle', source:'alert-dots', layout:{visibility:alertsVisible ? 'visible' : 'none'},
+        paint:{'circle-radius':6, 'circle-color':['match', ['get', 'event'], 'exit', '#ff8a65', '#f2b95d'],
+            'circle-stroke-color':'#0b1118', 'circle-stroke-width':2}});
+    map.on('click', 'alert-dots', e => {
+        if (pinMode || fenceDraft) return;
+        const alert = alertDots.find(item => String(item.id) === e.features?.[0]?.properties.id);
+        if (!alert) return;
+        const el = document.createElement('div');
+        el.className = 'obs-popup';
+        const line = (text, tag = 'div') => { const node = document.createElement(tag); node.textContent = text; el.append(node); };
+        line(alert.message, 'b');
+        if (alert.asset_name) line(alert.asset_name);
+        line(new Date(alert.occurred_at || alert.created_at).toLocaleString());
+        alertPopup?.remove();
+        alertPopup = new maplibregl.Popup({offset:10}).setLngLat([alert.lng, alert.lat]).setDOMContent(el).addTo(map);
+    });
+    map.on('mouseenter', 'alert-dots', () => { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', 'alert-dots', () => { map.getCanvas().style.cursor = ''; });
+}
+
+async function refreshAlertDots() {
+    if (!token) return;
+    try {
+        alertDots = await api('/alerts');
+    } catch {
+        return;
+    }
+    map?.getSource('alert-dots')?.setData(alertFeatures());
+}
+
+function scheduleAlertRefresh() {
+    // Fixes can arrive every few seconds; refresh alert dots at most once per burst.
+    clearTimeout(alertRefreshTimer);
+    alertRefreshTimer = setTimeout(refreshAlertDots, 3000);
+}
+
+function setAlertsVisible(visible) {
+    alertsVisible = visible;
+    $('#layerAlerts').classList.toggle('active', visible);
+    $('#layerAlerts').setAttribute('aria-pressed', String(visible));
+    if (map?.getLayer('alert-dots')) map.setLayoutProperty('alert-dots', 'visibility', visible ? 'visible' : 'none');
+    if (!visible) alertPopup?.remove();
+}
+$('#layerAlerts').onclick = () => setAlertsVisible(!alertsVisible);
+async function start(){try{user=await api('/me');$('#userEmail').textContent=user.email;$('#teamTab').hidden=user.role!=='admin';setLogin(false);initMap();await Promise.all([refreshAssets(),refreshObs(),refreshInspectionSites(),refreshGeofences(),refreshAlertDots()]);flushPendingObservations();syncSafety()?.catch(()=>{});connectLive();clearInterval(assetPoll);clearInterval(observationPoll);assetPoll=setInterval(refreshAssets,15000);observationPoll=setInterval(refreshObs,60000);clearInterval(inspectionPoll);inspectionPoll=setInterval(()=>{refreshInspectionSites();refreshGeofences();refreshAlertDots()},60000)}catch(e){setLogin(true)}}if(token&&!inviteToken)start();

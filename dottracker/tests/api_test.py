@@ -12,6 +12,10 @@ os.environ.setdefault('JWT_SECRET', 'integration-test-secret-not-for-deployment-
 os.environ.setdefault('DEVICE_TOKEN', 'demo-device-token')
 os.environ.setdefault('DATABASE_URL', 'postgresql://dottracker:dottracker_dev@localhost:5432/dottracker')
 
+from uuid import uuid4 as _uuid4  # noqa: E402
+
+RUN = _uuid4().hex[:8]  # test-created accounts get a per-run suffix so the suite can rerun on one database
+
 from app.main import app, pwd, SUPPORTED_SCHEMA_VERSIONS, missing_schema_versions, demo_seed_enabled  # noqa: E402
 
 
@@ -34,7 +38,7 @@ def create_second_org():
             cur.execute("INSERT INTO organizations(name) VALUES('Tenant Isolation Test') RETURNING id")
             org_id = cur.fetchone()[0]
             cur.execute('INSERT INTO users(org_id,email,password_hash,role) VALUES(%s,%s,%s,%s)',
-                        (org_id, 'viewer-isolation@test.invalid', pwd.hash('test-viewer-password-long'), 'viewer'))
+                        (org_id, f'viewer-isolation-{RUN}@test.invalid', pwd.hash('test-viewer-password-long'), 'viewer'))
             cur.execute("INSERT INTO assets(org_id,name,kind) VALUES(%s,'Tenant B Only','vehicle')", (org_id,))
     return org_id
 
@@ -46,7 +50,7 @@ def test_schema_gate_requires_every_supported_migration():
 
 
 def test_demo_seed_is_hidden_in_production(client):
-    assert client.get('/api/config').json() == {'demo_seed_enabled': True, 'version': '3.2.1'}
+    assert client.get('/api/config').json() == {'demo_seed_enabled': True, 'version': '3.3.0'}
     assert demo_seed_enabled('development', 'true') is True
     assert demo_seed_enabled('development', 'false') is False
     assert demo_seed_enabled('production', 'true') is False
@@ -69,7 +73,7 @@ def test_org_scope_and_viewer_permissions(client):
     org_b = create_second_org()
     admin_headers = login(client)
     asset_a = client.post('/api/assets', headers=admin_headers, json={'name': 'Tenant A Private Asset'}).json()['id']
-    viewer_headers = login(client, 'viewer-isolation@test.invalid', 'test-viewer-password-long')
+    viewer_headers = login(client, f'viewer-isolation-{RUN}@test.invalid', 'test-viewer-password-long')
     visible = client.get('/api/assets', headers=viewer_headers)
     assert visible.status_code == 200
     assert all(row['name'] == 'Tenant B Only' for row in visible.json())
@@ -84,7 +88,7 @@ def test_org_scope_and_viewer_permissions(client):
     assert client.get(f'/api/assets/{asset_a}/dispatch-route', headers=viewer_headers).status_code == 404
     assert client.put(f'/api/assets/{asset_a}/dispatch-route', headers=viewer_headers, json=route).status_code == 403
     with psycopg.connect(os.environ['DATABASE_URL']) as conn:
-        assert conn.execute('SELECT org_id FROM users WHERE email=%s', ('viewer-isolation@test.invalid',)).fetchone()[0] == org_b
+        assert conn.execute('SELECT org_id FROM users WHERE email=%s', (f'viewer-isolation-{RUN}@test.invalid',)).fetchone()[0] == org_b
 
 
 def test_tracker_auth_idempotency_and_geofence_alerts(client):
@@ -128,10 +132,10 @@ def test_timezone_required_and_authentication_errors(client):
 def test_invitation_is_single_use_and_respects_role(client):
     headers = login(client)
     invited = client.post('/api/invites', headers=headers,
-                          json={'email': 'New.Viewer@test.invalid', 'role': 'viewer'})
+                          json={'email': f'New.Viewer-{RUN}@test.invalid', 'role': 'viewer'})
     assert invited.status_code == 201
     payload = invited.json()
-    assert payload['email'] == 'new.viewer@test.invalid'
+    assert payload['email'] == f'new.viewer-{RUN}@test.invalid'
     accepted = client.post('/api/invites/accept', json={
         'token': payload['invite_token'], 'password': 'new-viewer-password-long'
     })
@@ -154,10 +158,10 @@ def test_invitation_authorization_replacement_and_expiry(client):
 
     # A replacement invitation for the same email invalidates the earlier link.
     first = client.post('/api/invites', headers=headers,
-                        json={'email': 'replaced.invite@test.invalid', 'role': 'viewer'})
+                        json={'email': f'replaced.invite-{RUN}@test.invalid', 'role': 'viewer'})
     assert first.status_code == 201
     second = client.post('/api/invites', headers=headers,
-                         json={'email': 'replaced.invite@test.invalid', 'role': 'admin'})
+                         json={'email': f'replaced.invite-{RUN}@test.invalid', 'role': 'admin'})
     assert second.status_code == 201
     stale = client.post('/api/invites/accept', json={
         'token': first.json()['invite_token'], 'password': 'replacement-password-long'})
@@ -170,20 +174,20 @@ def test_invitation_authorization_replacement_and_expiry(client):
 
     # Only administrators may create invitations.
     viewer = client.post('/api/invites', headers=headers,
-                         json={'email': 'viewer.cannot.invite@test.invalid', 'role': 'viewer'})
+                         json={'email': f'viewer.cannot.invite-{RUN}@test.invalid', 'role': 'viewer'})
     viewer_token = client.post('/api/invites/accept', json={
         'token': viewer.json()['invite_token'], 'password': 'viewer-cannot-invite-long'}).json()['access_token']
     viewer_headers = {'Authorization': f'Bearer {viewer_token}'}
     assert client.post('/api/invites', headers=viewer_headers,
-                       json={'email': 'escalation@test.invalid', 'role': 'admin'}).status_code == 403
+                       json={'email': f'escalation-{RUN}@test.invalid', 'role': 'admin'}).status_code == 403
 
     # An expired invitation is refused even when its token is otherwise correct.
     expiring = client.post('/api/invites', headers=headers,
-                           json={'email': 'expired.invite@test.invalid', 'role': 'viewer'})
+                           json={'email': f'expired.invite-{RUN}@test.invalid', 'role': 'viewer'})
     assert expiring.status_code == 201
     with psycopg.connect(os.environ['DATABASE_URL']) as conn:
         conn.execute("UPDATE invites SET expires_at = now() - interval '1 minute' WHERE email=%s",
-                     ('expired.invite@test.invalid',))
+                     (f'expired.invite-{RUN}@test.invalid',))
         conn.commit()
     expired = client.post('/api/invites/accept', json={
         'token': expiring.json()['invite_token'], 'password': 'expired-invite-password-long'})
@@ -446,14 +450,14 @@ def test_inspection_sites_are_admin_placed_org_scoped_and_expire(client):
     assert {'I-70 Silverthorne pull-off', 'Scheduled US-50 site'} <= set(listed)
 
     # Viewers in the same workspace see sites but cannot place or end them; other workspaces see nothing.
-    invite = client.post('/api/invites', headers=admin_headers, json={'email': 'site-viewer@test.invalid', 'role': 'viewer'}).json()
+    invite = client.post('/api/invites', headers=admin_headers, json={'email': f'site-viewer-{RUN}@test.invalid', 'role': 'viewer'}).json()
     accepted = client.post('/api/invites/accept', json={'token': invite['invite_token'], 'password': 'site-viewer-password-long'})
     assert accepted.status_code == 201, accepted.text
-    viewer = login(client, 'site-viewer@test.invalid', 'site-viewer-password-long')
+    viewer = login(client, f'site-viewer-{RUN}@test.invalid', 'site-viewer-password-long')
     assert any(row['id'] == body['id'] for row in client.get(path, headers=viewer).json())
     assert client.post(path, headers=viewer, json=site).status_code == 403
     assert client.post(f"{path}/{body['id']}/end", headers=viewer).status_code == 403
-    outsider = login(client, 'viewer-isolation@test.invalid', 'test-viewer-password-long')
+    outsider = login(client, f'viewer-isolation-{RUN}@test.invalid', 'test-viewer-password-long')
     assert all(row['id'] != body['id'] for row in client.get(path, headers=outsider).json())
 
     ended = client.post(f"{path}/{body['id']}/end", headers=admin_headers)
@@ -476,10 +480,55 @@ def test_geofence_list_and_delete_are_org_scoped_and_admin_only(client):
     listed = client.get('/api/geofences', headers=admin_headers).json()
     assert any(row['id'] == fence_id and row['shape'] == 'circle' and row['geometry']['radius_m'] == 250 for row in listed)
 
-    outsider = login(client, 'viewer-isolation@test.invalid', 'test-viewer-password-long')
+    outsider = login(client, f'viewer-isolation-{RUN}@test.invalid', 'test-viewer-password-long')
     assert all(row['id'] != fence_id for row in client.get('/api/geofences', headers=outsider).json())
     assert client.delete(f'/api/geofences/{fence_id}', headers=outsider).status_code == 403
 
     assert client.delete(f'/api/geofences/{fence_id}', headers=admin_headers).json() == {'deleted': True}
     assert client.delete(f'/api/geofences/{fence_id}', headers=admin_headers).status_code == 404
     assert all(row['id'] != fence_id for row in client.get('/api/geofences', headers=admin_headers).json())
+
+
+def test_geofence_alerts_can_be_paused_and_alerts_carry_their_location(client):
+    admin_headers = login(client)
+    with psycopg.connect(os.environ['DATABASE_URL']) as conn:
+        asset_id = conn.execute("SELECT id FROM assets WHERE device_id='truck-01'").fetchone()[0]
+    fence = client.post('/api/geofences', headers=admin_headers, json={
+        'name': f'Pause test {RUN}', 'shape': 'circle', 'geometry': {'lat': 38.5, 'lng': -106.5, 'radius_m': 500}}).json()
+    def fix(lat, seconds_ago):
+        response = client.post('/api/ingest', json={'device_id': 'truck-01', 'token': 'demo-device-token', 'lat': lat, 'lng': -106.5,
+            'speed': 10, 'recorded_at': (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).isoformat()})
+        assert response.status_code == 200, response.text
+    def fence_alerts():
+        return [a for a in client.get('/api/alerts', headers=admin_headers).json() if a['geofence_id'] == fence['id']]
+
+    fix(38.6, 6)
+    fix(38.5, 5)  # inside: enter
+    alerts = fence_alerts()
+    assert [a['event'] for a in alerts] == ['enter']
+    assert alerts[0]['lat'] == 38.5 and alerts[0]['lng'] == -106.5 and alerts[0]['asset_id'] == asset_id
+    assert alerts[0]['asset_name'] and alerts[0]['occurred_at']
+
+    viewer = login(client, f'viewer-isolation-{RUN}@test.invalid', 'test-viewer-password-long')
+    assert client.patch(f"/api/geofences/{fence['id']}", headers=viewer, json={'enabled': False}).status_code == 403
+    assert client.patch(f"/api/geofences/{fence['id']}", headers=admin_headers, json={'enabled': 'nope'}).status_code == 422
+    paused = client.patch(f"/api/geofences/{fence['id']}", headers=admin_headers, json={'enabled': False})
+    assert paused.status_code == 200 and paused.json()['enabled'] is False
+    fix(38.6, 4)  # leaves while paused: no alert
+    assert len(fence_alerts()) == 1
+
+    resumed = client.patch(f"/api/geofences/{fence['id']}", headers=admin_headers, json={'enabled': True}).json()
+    assert resumed['enabled'] is True
+    fix(38.5, 3)  # enters again with alerts on
+    assert [a['event'] for a in fence_alerts()] == ['enter', 'enter']
+    assert client.patch('/api/geofences/999999999', headers=admin_headers, json={'enabled': True}).status_code == 404
+
+
+def test_inspection_site_reports_who_placed_it(client):
+    admin_headers = login(client)
+    site = client.post('/api/v1/inspection-sites', headers=admin_headers, json={
+        'name': f'Placed-by test {RUN}', 'agency': 'CSP', 'lat': 39.7, 'lng': -105.0,
+        'ends_at': (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()}).json()
+    assert site['placed_by'] == 'admin@dottracker.local' and site['placed_at']
+    listed = [s for s in client.get('/api/v1/inspection-sites', headers=admin_headers).json() if s['id'] == site['id']]
+    assert listed[0]['placed_by'] == 'admin@dottracker.local'
