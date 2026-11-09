@@ -43,6 +43,17 @@ def create_second_org():
     return org_id
 
 
+def new_tracker(client, headers, label):
+    """A fresh asset with its own tracker, so each test's fixes are in time order."""
+    asset = client.post('/api/assets', headers=headers, json={'name': f'{label} {RUN}', 'device_id': f'{label}-{RUN}'}).json()
+    def send(lat, lng, seconds_ago):
+        response = client.post('/api/ingest', json={'device_id': asset['device_id'], 'token': asset['device_token'], 'lat': lat, 'lng': lng,
+            'speed': 5, 'recorded_at': (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).isoformat()})
+        assert response.status_code == 200, response.text
+        return response.json()
+    return asset, send
+
+
 def test_schema_gate_requires_every_supported_migration():
     assert missing_schema_versions(SUPPORTED_SCHEMA_VERSIONS) == set()
     prior_schema = {'0002-hardened-mvp'}
@@ -491,14 +502,12 @@ def test_geofence_list_and_delete_are_org_scoped_and_admin_only(client):
 
 def test_geofence_alerts_can_be_paused_and_alerts_carry_their_location(client):
     admin_headers = login(client)
-    with psycopg.connect(os.environ['DATABASE_URL']) as conn:
-        asset_id = conn.execute("SELECT id FROM assets WHERE device_id='truck-01'").fetchone()[0]
+    tracker, send = new_tracker(client, admin_headers, 'pause')
+    asset_id = tracker['id']
     fence = client.post('/api/geofences', headers=admin_headers, json={
         'name': f'Pause test {RUN}', 'shape': 'circle', 'geometry': {'lat': 38.5, 'lng': -106.5, 'radius_m': 500}}).json()
     def fix(lat, seconds_ago):
-        response = client.post('/api/ingest', json={'device_id': 'truck-01', 'token': 'demo-device-token', 'lat': lat, 'lng': -106.5,
-            'speed': 10, 'recorded_at': (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).isoformat()})
-        assert response.status_code == 200, response.text
+        send(lat, -106.5, seconds_ago)
     def fence_alerts():
         return [a for a in client.get('/api/alerts', headers=admin_headers).json() if a['geofence_id'] == fence['id']]
 
@@ -551,9 +560,9 @@ def test_alerts_can_be_marked_read_within_the_workspace(client):
     headers = login(client)
     fence = client.post('/api/geofences', headers=headers, json={
         'name': f'Read test {RUN}', 'shape': 'circle', 'geometry': {'lat': 37.9, 'lng': -107.9, 'radius_m': 400}}).json()
+    _, send = new_tracker(client, headers, 'reads')
     def fix(lat, seconds_ago):
-        assert client.post('/api/ingest', json={'device_id': 'truck-01', 'token': 'demo-device-token', 'lat': lat, 'lng': -107.9,
-            'speed': 5, 'recorded_at': (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).isoformat()}).status_code == 200
+        send(lat, -107.9, seconds_ago)
     fix(38.0, 3); fix(37.9, 2); fix(38.0, 1)  # enter, then exit
     mine = lambda: [a for a in client.get('/api/alerts', headers=headers).json() if a['geofence_id'] == fence['id']]
     first, second = mine()
@@ -579,9 +588,9 @@ def test_alert_read_state_is_per_person(client):
     reader = login(client, f'reader-{RUN}@test.invalid', 'reader-password-long-1')
     fence = client.post('/api/geofences', headers=admin_headers, json={
         'name': f'Per person {RUN}', 'shape': 'circle', 'geometry': {'lat': 37.5, 'lng': -105.5, 'radius_m': 400}}).json()
+    _, send = new_tracker(client, admin_headers, 'perperson')
     for lat, ago in [(37.6, 3), (37.5, 2)]:
-        client.post('/api/ingest', json={'device_id': 'truck-01', 'token': 'demo-device-token', 'lat': lat, 'lng': -105.5,
-            'speed': 5, 'recorded_at': (datetime.now(timezone.utc) - timedelta(seconds=ago)).isoformat()})
+        send(lat, -105.5, ago)
     pick = lambda headers: [a for a in client.get('/api/alerts', headers=headers).json() if a['geofence_id'] == fence['id']]
     (alert,) = pick(admin_headers)
     assert client.post('/api/alerts/read', headers=admin_headers, json={}).json()['marked_read'] >= 1
@@ -615,3 +624,40 @@ def test_offline_map_style_and_highways(client):
     assert all(f['geometry']['type'] == 'LineString' and len(f['geometry']['coordinates']) >= 2 for f in highways['features'])
     csp = client.get('/health').headers['content-security-policy']
     assert "connect-src 'self' wss: https://tiles.openfreemap.org https://*.openfreemap.org;" in csp
+
+
+def test_geofence_polygon_works_with_an_empty_search_path():
+    # pg_restore runs with search_path='' while it recomputes geofences.geom; the
+    # function must still resolve PostGIS types, or restored backups lose every geofence.
+    ring = '[[-105.1,39.7],[-105.0,39.7],[-105.0,39.8]]'
+    with psycopg.connect(os.environ['DATABASE_URL']) as conn:
+        conn.execute("SET search_path = ''")
+        valid = conn.execute('SELECT public.ST_IsValid(public.geofence_polygon(%s::jsonb))', (ring,)).fetchone()[0]
+        config = conn.execute("SELECT proconfig FROM pg_catalog.pg_proc WHERE proname = 'geofence_polygon'").fetchone()[0]
+    assert valid is True
+    assert 'search_path=public, pg_temp' in config
+
+
+def test_out_of_order_fix_is_stored_but_raises_no_fence_alert(client):
+    headers = login(client)
+    fence = client.post('/api/geofences', headers=headers, json={
+        'name': f'Out of order {RUN}', 'shape': 'circle', 'geometry': {'lat': 37.2, 'lng': -104.2, 'radius_m': 400}}).json()
+    tracker, send = new_tracker(client, headers, 'late')
+    assert send(37.3, -104.2, 2)['accepted'] is True    # newest fix, outside
+    assert send(37.2, -104.2, 40)['accepted'] is True   # delayed fix from earlier, inside the fence
+    events = [a['event'] for a in client.get('/api/alerts', headers=headers).json() if a['geofence_id'] == fence['id']]
+    assert events == []
+    trip = client.get(f"/api/assets/{tracker['id']}/positions", headers=headers).json()
+    assert [p['lat'] for p in trip] == [37.2, 37.3]  # the delayed fix is kept, in time order
+    send(37.2, -104.2, 1)                                # a new, in-order fix inside does raise the alert
+    events = [a['event'] for a in client.get('/api/alerts', headers=headers).json() if a['geofence_id'] == fence['id']]
+    assert events == ['enter']
+
+
+def test_trip_history_for_another_workspace_asset_is_not_found(client):
+    admin_headers = login(client)
+    asset_id = client.post('/api/assets', headers=admin_headers, json={'name': f'History owner {RUN}'}).json()['id']
+    assert client.get(f'/api/assets/{asset_id}/positions', headers=admin_headers).status_code == 200
+    outsider = login(client, f'viewer-isolation-{RUN}@test.invalid', 'test-viewer-password-long')
+    assert client.get(f'/api/assets/{asset_id}/positions', headers=outsider).status_code == 404
+    assert client.get('/api/assets/999999999/positions', headers=admin_headers).status_code == 404

@@ -4,7 +4,11 @@
 
 - **Base map:** new `MAP_STYLE_URL` setting. The default is OpenFreeMap; `offline` serves a built-in map (Colorado outline and CDOT highways drawn from the milepoints) that needs no outside network; or use any `https://` style from your own tile server. `MAP_EXTRA_ORIGINS` lists any other tile, glyph or sprite hosts. The CSP's `connect-src` now allows only the configured origins, and the API refuses to start on a non-HTTPS value. New `GET /api/v1/map/offline-style.json` and `GET /api/v1/map/highways.geojson` (signed in).
 - **Per-person alert reads:** migration `0011-alert-reads` adds `alert_reads`. `POST /api/alerts/read` and `GET /api/alerts` now use the signed-in person's own read state. Alerts already read workspace-wide stay read for everyone who was a member.
-- Tests for per-person reads, map settings validation, the offline style and highways, and the CSP.
+- **Fixed: backups lost every geofence on restore.** `geofence_polygon()`, which computes `geofences.geom`, used PostGIS names without a schema. `pg_restore` runs with an empty `search_path`, so restoring the table failed and the restored copy had no geofences. Migration `0012-function-search-path` pins the function's `search_path`. Found in the v3.5.0 staging restore rehearsal.
+- **Base map fallback:** if the configured base map can't load (unreachable or timed out after 15 seconds), the map switches to the built-in offline map and says so, instead of staying blank with no message (staging rehearsal U3).
+- **Fixed: delayed tracker fixes raised false geofence alerts.** A fix older than one already stored is still saved for trip history, but it no longer triggers enter or exit alerts. Found in the v3.5.0 staging rehearsal (F10/F12).
+- **Fixed:** trip history for another workspace's asset, or an unknown asset, now returns 404 instead of an empty list (staging rehearsal F19; no data was exposed).
+- Tests for per-person reads, map settings validation, the offline style and highways, the CSP, and `geofence_polygon()` under an empty `search_path`.
 
 ## 3.4.0 — Readable popups, alert read state, live geofence updates, automatic release tags
 

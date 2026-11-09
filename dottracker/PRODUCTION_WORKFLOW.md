@@ -67,7 +67,7 @@ For a new database, apply the current baseline once with the migration role:
 psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -f sql/schema.sql
 ```
 
-For an existing supported MVP database, do not reapply the baseline. Take and verify a backup, then let the migration runner apply the pending numbered migrations. It applies 0002 through 0011 in order and records each version.
+For an existing supported MVP database, do not reapply the baseline. Take and verify a backup, then let the migration runner apply the pending numbered migrations. It applies 0002 through 0012 in order and records each version.
 
 Build and run the production migration service, then start the API:
 
@@ -78,7 +78,7 @@ docker compose -f docker-compose.production.yml --profile migration run --rm cdo
 docker compose -f docker-compose.production.yml up -d api
 ```
 
-The API refuses to start unless every supported schema version through `0011-alert-reads` is recorded. The `cdot-stations` one-shot loads the CDOT reference data from `../data` using the migration credential. Do not bypass this gate to make a deployment appear healthy.
+The API refuses to start unless every supported schema version through `0012-function-search-path` is recorded. The `cdot-stations` one-shot loads the CDOT reference data from `../data` using the migration credential. Do not bypass this gate to make a deployment appear healthy.
 
 ## 5. Staging acceptance
 

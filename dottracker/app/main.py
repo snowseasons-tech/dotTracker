@@ -41,6 +41,7 @@ SUPPORTED_SCHEMA_VERSIONS=frozenset({
     '0009-cdot-stations',
     '0010-inspection-sites',
     '0011-alert-reads',
+    '0012-function-search-path',
 })
 
 # Base map: OpenFreeMap by default, any HTTPS style (e.g. a self-hosted tile server),
@@ -310,6 +311,7 @@ def history(asset_id:int=ApiPath(gt=0),from_:Optional[datetime]=Query(None,alias
     if start < now-timedelta(days=30): start=now-timedelta(days=30)
     if end>now: end=now
     if end<start: raise HTTPException(422,'to must be at or after from')
+    if not c.execute('SELECT 1 FROM assets WHERE id=%s AND org_id=%s',(asset_id,u['org_id'])).fetchone(): raise HTTPException(404,'Asset not found')
     rows=c.execute('SELECT id,lat,lng,speed,heading,recorded_at FROM positions WHERE org_id=%s AND asset_id=%s AND recorded_at BETWEEN %s AND %s ORDER BY recorded_at LIMIT 10000',(u['org_id'],asset_id,start,end)).fetchall()
     return rows
 
@@ -760,7 +762,10 @@ def ingest(b:PositionIn,background_tasks:BackgroundTasks,c=Depends(db)):
         c.commit()
         return {'accepted':True,'duplicate':True}
     previous=c.execute('SELECT lat,lng FROM positions WHERE asset_id=%s AND id<>%s AND recorded_at<%s ORDER BY recorded_at DESC LIMIT 1',(d['asset_id'],position['id'],ts)).fetchone()
-    fences=c.execute('SELECT id,name,shape,geometry FROM geofences WHERE org_id=%s AND enabled=true',(d['org_id'],)).fetchall()
+    # A delayed fix older than one already stored is kept for trip history, but it is not
+    # a live fence crossing: evaluating it would raise enter/exit alerts out of order.
+    newer=c.execute('SELECT 1 FROM positions WHERE asset_id=%s AND id<>%s AND recorded_at>%s LIMIT 1',(d['asset_id'],position['id'],ts)).fetchone()
+    fences=[] if newer else c.execute('SELECT id,name,shape,geometry FROM geofences WHERE org_id=%s AND enabled=true',(d['org_id'],)).fetchall()
     for f in fences:
         was=inside(f,previous['lat'],previous['lng']) if previous else False; is_inside=inside(f,b.lat,b.lng)
         if was!=is_inside:

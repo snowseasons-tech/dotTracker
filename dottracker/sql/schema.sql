@@ -186,3 +186,9 @@ FROM alerts a JOIN users u ON u.org_id = a.org_id
 WHERE a.read_at IS NOT NULL
 ON CONFLICT DO NOTHING;
 INSERT INTO schema_migrations(version) VALUES('0011-alert-reads') ON CONFLICT DO NOTHING;
+-- dotTracker v3.5: pin geofence_polygon()'s search_path. pg_dump/pg_restore run with
+-- an empty search_path, so the unqualified GEOMETRY type and ST_* calls failed while
+-- restoring the generated geofences.geom column and every geofence was dropped from
+-- the restored copy. Found in the v3.5.0 staging restore rehearsal.
+ALTER FUNCTION geofence_polygon(JSONB) SET search_path = public, pg_temp;
+INSERT INTO schema_migrations(version) VALUES('0012-function-search-path') ON CONFLICT DO NOTHING;
