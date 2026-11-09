@@ -47,7 +47,7 @@ API (any signed-in user; read-only):
 - `GET /api/v1/cdot/locate?lat=&lng=` returns `{milepoint, patrol, nearest_station}`. `milepoint` and `patrol` are `null` off the highway network.
 - `GET /api/v1/cdot/summary` returns the loaded datasets with row counts and load time.
 
-`GET /api/config` also reports the app version (`"version": "3.2.0"`).
+`GET /api/config` also reports the app version (`"version": "3.2.1"`).
 
 ## Geofences on the map (v3.2)
 

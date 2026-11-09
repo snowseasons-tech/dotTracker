@@ -1,5 +1,11 @@
 # Changelog
 
+## 3.2.1 — MapLibre served by the app
+
+- MapLibre GL JS 6.16.0 is now vendored under `app/static/vendor/maplibre-gl-6.16.0/`: unmodified files from the npm package, with their license and recorded SHA-256 hashes. The map no longer loads code from unpkg at runtime, so a CDN outage or change can't break or alter it.
+- The Content Security Policy no longer allows any third-party script, style or worker source: `script-src 'self'`, `style-src 'self' 'unsafe-inline'`, `worker-src 'self' blob:`. That reverses the unpkg allowance 3.1.1 had to add. Base-map tiles still load from OpenFreeMap.
+- Tests check that the vendored files match their recorded hashes, that the app references them, that they are served with the right types, and that the policy names no CDN.
+
 ## 3.2.0 — Saved geofences on the map
 
 - Every saved geofence is now outlined on the map. Polygons use their corners, and circles are drawn at their true ground radius. Before this, only a fence you were drawing was visible.
