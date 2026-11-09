@@ -78,7 +78,9 @@ $('#inviteBack').onclick = () => {
         start();
     }
 };
-function initMap(){if(map)return;map=new maplibregl.Map({container:'map',style:'https://tiles.openfreemap.org/styles/dark',center:[-104.99,39.739],zoom:11});map.addControl(new maplibregl.NavigationControl(),'top-right');map.on('load',()=>{initGeofenceLayer();initCheckpointLayer();initAlertLayer();initCdotLayer();initInspectionLayer();refreshAssets();refreshObs()});map.on('contextmenu', e => {if (!fenceDraft) openObservation([e.lngLat.lng, e.lngLat.lat])});map.on('click', e => {
+async function mapStyle(){try{const cfg=await fetch(API+'/config').then(r=>r.json());if(typeof cfg.map_style==='string'&&cfg.map_style)return new URL(cfg.map_style,location.origin).href}catch{}return 'https://tiles.openfreemap.org/styles/dark'}
+function mapRequest(url){const target=new URL(url,location.origin);if(target.origin===location.origin&&target.pathname.startsWith('/api/')&&token)return {url:target.href,headers:{Authorization:'Bearer '+token}};return {url:target.href}}
+async function initMap(){if(map)return;const style=await mapStyle();if(map)return;map=new maplibregl.Map({container:'map',style,center:[-104.99,39.739],zoom:11,transformRequest:mapRequest});watchBaseMap(style);map.addControl(new maplibregl.NavigationControl(),'top-right');map.on('load',()=>{initGeofenceLayer();initCheckpointLayer();initAlertLayer();initCdotLayer();initInspectionLayer();refreshAssets();refreshObs()});map.on('contextmenu', e => {if (!fenceDraft) openObservation([e.lngLat.lng, e.lngLat.lat])});map.on('click', e => {
     if (fenceDraft) {
         addFenceCorner(e.lngLat.wrap());
         return;
@@ -116,7 +118,7 @@ async function refreshAssets() {
         lastAssetsRefresh = new Date();
         const status = $('#mapStatus');
         status.dataset.state = 'ok';
-        status.textContent = `${assets.length} assets · updated ${lastAssetsRefresh.toLocaleTimeString()}`;
+        status.textContent = `${assets.length} assets · updated ${lastAssetsRefresh.toLocaleTimeString()}${baseMapFallback ? ' · offline base map (configured map unavailable)' : ''}`;
     } catch {
         const status = $('#mapStatus');
         status.dataset.state = 'error';
@@ -917,7 +919,6 @@ async function connectLive() {
             if (message.type === 'checkpoint_created' || message.type === 'sync_ready') refreshObs();
             if (message.type === 'inspection_site_changed' || message.type === 'sync_ready') refreshInspectionSites();
             if (message.type === 'geofence_changed' || message.type === 'sync_ready') refreshGeofences();
-            if (message.type === 'alerts_read' && view === 'alerts') renderSidebar();
             if (message.type === 'sync_ready' || message.type === 'route_updated') {
                 const asset = $('#dispatchAsset');
                 if (!dispatchSync && view === 'dispatch' && asset?.value &&
@@ -1484,4 +1485,24 @@ async function renderAlerts(root) {
         }
     });
 }
-async function start(){try{user=await api('/me');$('#userEmail').textContent=user.email;$('#teamTab').hidden=user.role!=='admin';setLogin(false);initMap();await Promise.all([refreshAssets(),refreshObs(),refreshInspectionSites(),refreshGeofences(),refreshAlertDots()]);flushPendingObservations();syncSafety()?.catch(()=>{});connectLive();clearInterval(assetPoll);clearInterval(observationPoll);assetPoll=setInterval(refreshAssets,15000);observationPoll=setInterval(refreshObs,60000);clearInterval(inspectionPoll);inspectionPoll=setInterval(()=>{refreshInspectionSites();refreshGeofences();refreshAlertDots()},60000)}catch(e){setLogin(true)}}if(token&&!inviteToken)start();
+// --- v3.5: fall back to the built-in offline map when the configured base map can't load ---
+const OFFLINE_STYLE_PATH = '/api/v1/map/offline-style.json';
+var baseMapFallback = false;
+function watchBaseMap(style) {
+    if (new URL(style, location.origin).pathname === OFFLINE_STYLE_PATH) return;
+    let switched = false;
+    const fallback = reason => {
+        if (switched || map.isStyleLoaded()) return;
+        switched = true;
+        baseMapFallback = true;
+        map.setStyle(new URL(OFFLINE_STYLE_PATH, location.origin).href);
+        const status = $('#mapStatus');
+        status.dataset.state = 'error';
+        status.textContent = 'Base map unavailable · showing the built-in offline map';
+        toast(`Base map unavailable (${reason}); showing the built-in offline map`);
+    };
+    // A style that can't be fetched fires an error before 'load'; a hung one never loads.
+    map.on('error', event => { if (!map.isStyleLoaded()) fallback(event?.error?.status ? `HTTP ${event.error.status}` : 'network error'); });
+    setTimeout(() => fallback('timed out'), 15000);
+}
+async function start(){try{user=await api('/me');$('#userEmail').textContent=user.email;$('#teamTab').hidden=user.role!=='admin';setLogin(false);await initMap();await Promise.all([refreshAssets(),refreshObs(),refreshInspectionSites(),refreshGeofences(),refreshAlertDots()]);flushPendingObservations();syncSafety()?.catch(()=>{});connectLive();clearInterval(assetPoll);clearInterval(observationPoll);assetPoll=setInterval(refreshAssets,15000);observationPoll=setInterval(refreshObs,60000);clearInterval(inspectionPoll);inspectionPoll=setInterval(()=>{refreshInspectionSites();refreshGeofences();refreshAlertDots()},60000)}catch(e){setLogin(true)}}if(token&&!inviteToken)start();

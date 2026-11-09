@@ -1,6 +1,6 @@
 # dotTracker v3 · production-oriented MVP
 
-Development and release gates: see [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md) and the step-by-step [PRODUCTION_WORKFLOW.md](PRODUCTION_WORKFLOW.md). The API refuses to start unless all supported migrations through `0010-inspection-sites` are applied.
+Development and release gates: see [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md) and the step-by-step [PRODUCTION_WORKFLOW.md](PRODUCTION_WORKFLOW.md). The API refuses to start unless all supported migrations through `0012-function-search-path` are applied.
 
 A pilot fleet-tracking application with a responsive MapLibre dashboard, FastAPI API, PostgreSQL/PostGIS schema, Argon2id password hashing, rotating opaque refresh sessions, org-scoped access, individual tracker credentials, short-lived one-use WebSocket tickets, duplicate-fix and observation idempotency, offline observation queueing, trip history, circle/polygon geofences, alerts, and observation pins.
 
@@ -47,7 +47,21 @@ API (any signed-in user; read-only):
 - `GET /api/v1/cdot/locate?lat=&lng=` returns `{milepoint, patrol, nearest_station}`. `milepoint` and `patrol` are `null` off the highway network.
 - `GET /api/v1/cdot/summary` returns the loaded datasets with row counts and load time.
 
-`GET /api/config` also reports the app version (`"version": "3.4.0"`).
+`GET /api/config` also reports the app version (`"version": "3.5.0"`).
+
+## Base map and per-person alert reads (v3.5)
+
+**Base map.** Set `MAP_STYLE_URL` to choose the map under dotTracker's layers:
+
+- unset, or `https://tiles.openfreemap.org/styles/dark`: OpenFreeMap (the default).
+- `offline`: a built-in map served by dotTracker itself. It shows Colorado's outline and the CDOT highway network drawn from the loaded milepoints, and needs no outside network. Use it on restricted networks or when OpenFreeMap is unreachable.
+- any `https://` style URL, for example your own tile server. If the style loads tiles, glyphs or sprites from other hosts, list those `https://` origins in `MAP_EXTRA_ORIGINS`, comma-separated.
+
+If the configured map can't be reached, the app switches to the built-in offline map and says so in the map status. The security policy's `connect-src` allows exactly the configured map origins and nothing else. The API refuses to start if either setting isn't `https://`. `GET /api/config` reports `map_style`.
+
+**Alert read state is per person.** Marking an alert read, or **Mark all read**, affects only your own Alerts tab. Migration `0011-alert-reads` adds the `alert_reads` table and carries over alerts that were already read workspace-wide, so nobody sees old alerts reappear as unread.
+
+**Backups restore geofences correctly.** Migration `0012-function-search-path` pins the `search_path` of the function behind each geofence's computed shape. Without it, `pg_restore`, which runs with an empty `search_path`, dropped every geofence from a restored backup. Upgrade before relying on a restore.
 
 ## Alert read state and live geofence updates (v3.4)
 
@@ -101,7 +115,7 @@ The invited person opens the link, sets and confirms a password of at least 14 c
 
 Use the step-by-step [production development and release workflow](PRODUCTION_WORKFLOW.md) for database setup, migration, TLS ingress, staging acceptance, backup restore, release, and rollback.
 
-The production Compose profile expects an operator-provisioned PostgreSQL 17 + PostGIS 3.5 database, a private TLS reverse proxy or managed edge, and separate least-privilege runtime and migration credentials. New databases receive `sql/schema.sql` once; supported existing databases are upgraded by `migrate.py`. The API refuses to start until migrations 0002 through 0010 are recorded.
+The production Compose profile expects an operator-provisioned PostgreSQL 17 + PostGIS 3.5 database, a private TLS reverse proxy or managed edge, and separate least-privilege runtime and migration credentials. New databases receive `sql/schema.sql` once; supported existing databases are upgraded by `migrate.py`. The API refuses to start until migrations 0002 through 0012 are recorded.
 
 Production hosting, database credentials, TLS ingress, monitoring, and a verified backup restore are not configured in this repository. dotTracker is not production-verified until the staging gates in the workflow have passed.
 

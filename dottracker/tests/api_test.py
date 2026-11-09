@@ -16,7 +16,7 @@ from uuid import uuid4 as _uuid4  # noqa: E402
 
 RUN = _uuid4().hex[:8]  # test-created accounts get a per-run suffix so the suite can rerun on one database
 
-from app.main import app, pwd, SUPPORTED_SCHEMA_VERSIONS, missing_schema_versions, demo_seed_enabled  # noqa: E402
+from app.main import map_settings, app, pwd, SUPPORTED_SCHEMA_VERSIONS, missing_schema_versions, demo_seed_enabled  # noqa: E402
 
 
 @pytest.fixture(scope='session')
@@ -43,6 +43,17 @@ def create_second_org():
     return org_id
 
 
+def new_tracker(client, headers, label):
+    """A fresh asset with its own tracker, so each test's fixes are in time order."""
+    asset = client.post('/api/assets', headers=headers, json={'name': f'{label} {RUN}', 'device_id': f'{label}-{RUN}'}).json()
+    def send(lat, lng, seconds_ago):
+        response = client.post('/api/ingest', json={'device_id': asset['device_id'], 'token': asset['device_token'], 'lat': lat, 'lng': lng,
+            'speed': 5, 'recorded_at': (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).isoformat()})
+        assert response.status_code == 200, response.text
+        return response.json()
+    return asset, send
+
+
 def test_schema_gate_requires_every_supported_migration():
     assert missing_schema_versions(SUPPORTED_SCHEMA_VERSIONS) == set()
     prior_schema = {'0002-hardened-mvp'}
@@ -50,7 +61,7 @@ def test_schema_gate_requires_every_supported_migration():
 
 
 def test_demo_seed_is_hidden_in_production(client):
-    assert client.get('/api/config').json() == {'demo_seed_enabled': True, 'version': '3.4.0'}
+    assert client.get('/api/config').json() == {'demo_seed_enabled': True, 'version': '3.5.0', 'map_style': 'https://tiles.openfreemap.org/styles/dark'}
     assert demo_seed_enabled('development', 'true') is True
     assert demo_seed_enabled('development', 'false') is False
     assert demo_seed_enabled('production', 'true') is False
@@ -491,14 +502,12 @@ def test_geofence_list_and_delete_are_org_scoped_and_admin_only(client):
 
 def test_geofence_alerts_can_be_paused_and_alerts_carry_their_location(client):
     admin_headers = login(client)
-    with psycopg.connect(os.environ['DATABASE_URL']) as conn:
-        asset_id = conn.execute("SELECT id FROM assets WHERE device_id='truck-01'").fetchone()[0]
+    tracker, send = new_tracker(client, admin_headers, 'pause')
+    asset_id = tracker['id']
     fence = client.post('/api/geofences', headers=admin_headers, json={
         'name': f'Pause test {RUN}', 'shape': 'circle', 'geometry': {'lat': 38.5, 'lng': -106.5, 'radius_m': 500}}).json()
     def fix(lat, seconds_ago):
-        response = client.post('/api/ingest', json={'device_id': 'truck-01', 'token': 'demo-device-token', 'lat': lat, 'lng': -106.5,
-            'speed': 10, 'recorded_at': (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).isoformat()})
-        assert response.status_code == 200, response.text
+        send(lat, -106.5, seconds_ago)
     def fence_alerts():
         return [a for a in client.get('/api/alerts', headers=admin_headers).json() if a['geofence_id'] == fence['id']]
 
@@ -551,9 +560,9 @@ def test_alerts_can_be_marked_read_within_the_workspace(client):
     headers = login(client)
     fence = client.post('/api/geofences', headers=headers, json={
         'name': f'Read test {RUN}', 'shape': 'circle', 'geometry': {'lat': 37.9, 'lng': -107.9, 'radius_m': 400}}).json()
+    _, send = new_tracker(client, headers, 'reads')
     def fix(lat, seconds_ago):
-        assert client.post('/api/ingest', json={'device_id': 'truck-01', 'token': 'demo-device-token', 'lat': lat, 'lng': -107.9,
-            'speed': 5, 'recorded_at': (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).isoformat()}).status_code == 200
+        send(lat, -107.9, seconds_ago)
     fix(38.0, 3); fix(37.9, 2); fix(38.0, 1)  # enter, then exit
     mine = lambda: [a for a in client.get('/api/alerts', headers=headers).json() if a['geofence_id'] == fence['id']]
     first, second = mine()
@@ -570,3 +579,85 @@ def test_alerts_can_be_marked_read_within_the_workspace(client):
     assert client.post('/api/alerts/read', headers=headers, json={'ids': [first['id']]}).json() == {'marked_read': 0}
     assert client.post('/api/alerts/read', headers=headers, json={}).json()['marked_read'] >= 1
     assert all(a['read_at'] for a in mine())
+
+
+def test_alert_read_state_is_per_person(client):
+    admin_headers = login(client)
+    invite = client.post('/api/invites', headers=admin_headers, json={'email': f'reader-{RUN}@test.invalid', 'role': 'viewer'}).json()
+    assert client.post('/api/invites/accept', json={'token': invite['invite_token'], 'password': 'reader-password-long-1'}).status_code == 201
+    reader = login(client, f'reader-{RUN}@test.invalid', 'reader-password-long-1')
+    fence = client.post('/api/geofences', headers=admin_headers, json={
+        'name': f'Per person {RUN}', 'shape': 'circle', 'geometry': {'lat': 37.5, 'lng': -105.5, 'radius_m': 400}}).json()
+    _, send = new_tracker(client, admin_headers, 'perperson')
+    for lat, ago in [(37.6, 3), (37.5, 2)]:
+        send(lat, -105.5, ago)
+    pick = lambda headers: [a for a in client.get('/api/alerts', headers=headers).json() if a['geofence_id'] == fence['id']]
+    (alert,) = pick(admin_headers)
+    assert client.post('/api/alerts/read', headers=admin_headers, json={}).json()['marked_read'] >= 1
+    assert pick(admin_headers)[0]['read_at'] is not None
+    assert pick(reader)[0]['read_at'] is None  # the admin reading it does not mark it read for anyone else
+    assert client.post('/api/alerts/read', headers=reader, json={'ids': [alert['id']]}).json() == {'marked_read': 1}
+    assert pick(reader)[0]['read_at'] is not None
+
+
+def test_map_style_settings_validate_and_drive_the_csp():
+    assert map_settings('', '') == ('https://tiles.openfreemap.org/styles/dark', ['https://tiles.openfreemap.org', 'https://*.openfreemap.org'])
+    assert map_settings('offline', '') == ('/api/v1/map/offline-style.json', [])
+    style, origins = map_settings('https://maps.example.org/styles/basic.json', 'https://tiles.example.org, https://fonts.example.org/')
+    assert style == 'https://maps.example.org/styles/basic.json'
+    assert origins == ['https://maps.example.org', 'https://tiles.example.org', 'https://fonts.example.org']
+    for bad_style, bad_extra in [('http://maps.example.org/style.json', ''), ('https://user:pw@maps.example.org/s.json', ''),
+                                 ('javascript:alert(1)', ''), ('offline', 'http://tiles.example.org'), ('offline', 'https://tiles.example.org/path')]:
+        with pytest.raises(RuntimeError):
+            map_settings(bad_style, bad_extra)
+
+
+def test_offline_map_style_and_highways(client):
+    style = client.get('/api/v1/map/offline-style.json')
+    assert style.status_code == 200
+    body = style.json()
+    assert body['version'] == 8 and body['sources']['highways']['data'] == '/api/v1/map/highways.geojson'
+    assert {layer['id'] for layer in body['layers']} >= {'background', 'colorado-outline', 'highways'}
+    assert client.get('/api/v1/map/highways.geojson').status_code == 401
+    highways = client.get('/api/v1/map/highways.geojson', headers=login(client)).json()
+    assert highways['type'] == 'FeatureCollection'
+    assert all(f['geometry']['type'] == 'LineString' and len(f['geometry']['coordinates']) >= 2 for f in highways['features'])
+    csp = client.get('/health').headers['content-security-policy']
+    assert "connect-src 'self' wss: https://tiles.openfreemap.org https://*.openfreemap.org;" in csp
+
+
+def test_geofence_polygon_works_with_an_empty_search_path():
+    # pg_restore runs with search_path='' while it recomputes geofences.geom; the
+    # function must still resolve PostGIS types, or restored backups lose every geofence.
+    ring = '[[-105.1,39.7],[-105.0,39.7],[-105.0,39.8]]'
+    with psycopg.connect(os.environ['DATABASE_URL']) as conn:
+        conn.execute("SET search_path = ''")
+        valid = conn.execute('SELECT public.ST_IsValid(public.geofence_polygon(%s::jsonb))', (ring,)).fetchone()[0]
+        config = conn.execute("SELECT proconfig FROM pg_catalog.pg_proc WHERE proname = 'geofence_polygon'").fetchone()[0]
+    assert valid is True
+    assert 'search_path=public, pg_temp' in config
+
+
+def test_out_of_order_fix_is_stored_but_raises_no_fence_alert(client):
+    headers = login(client)
+    fence = client.post('/api/geofences', headers=headers, json={
+        'name': f'Out of order {RUN}', 'shape': 'circle', 'geometry': {'lat': 37.2, 'lng': -104.2, 'radius_m': 400}}).json()
+    tracker, send = new_tracker(client, headers, 'late')
+    assert send(37.3, -104.2, 2)['accepted'] is True    # newest fix, outside
+    assert send(37.2, -104.2, 40)['accepted'] is True   # delayed fix from earlier, inside the fence
+    events = [a['event'] for a in client.get('/api/alerts', headers=headers).json() if a['geofence_id'] == fence['id']]
+    assert events == []
+    trip = client.get(f"/api/assets/{tracker['id']}/positions", headers=headers).json()
+    assert [p['lat'] for p in trip] == [37.2, 37.3]  # the delayed fix is kept, in time order
+    send(37.2, -104.2, 1)                                # a new, in-order fix inside does raise the alert
+    events = [a['event'] for a in client.get('/api/alerts', headers=headers).json() if a['geofence_id'] == fence['id']]
+    assert events == ['enter']
+
+
+def test_trip_history_for_another_workspace_asset_is_not_found(client):
+    admin_headers = login(client)
+    asset_id = client.post('/api/assets', headers=admin_headers, json={'name': f'History owner {RUN}'}).json()['id']
+    assert client.get(f'/api/assets/{asset_id}/positions', headers=admin_headers).status_code == 200
+    outsider = login(client, f'viewer-isolation-{RUN}@test.invalid', 'test-viewer-password-long')
+    assert client.get(f'/api/assets/{asset_id}/positions', headers=outsider).status_code == 404
+    assert client.get('/api/assets/999999999/positions', headers=admin_headers).status_code == 404

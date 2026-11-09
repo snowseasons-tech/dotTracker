@@ -26,7 +26,7 @@ def main() -> None:
     with psycopg.connect(database_url, row_factory=dict_row) as conn:
         conn.execute('SELECT pg_advisory_xact_lock(841257301)')
         _apply_next(conn)
-        for version in ('0003-dispatch-routes', '0004-dispatch-progress', '0005-temporary-checkpoints', '0006-checkpoint-spatial', '0007-geofence-spatial', '0008-safety-checklists', '0009-cdot-stations', '0010-inspection-sites'):
+        for version in ('0003-dispatch-routes', '0004-dispatch-progress', '0005-temporary-checkpoints', '0006-checkpoint-spatial', '0007-geofence-spatial', '0008-safety-checklists', '0009-cdot-stations', '0010-inspection-sites', '0011-alert-reads', '0012-function-search-path'):
             if not conn.execute('SELECT 1 FROM schema_migrations WHERE version=%s', (version,)).fetchone():
                 conn.execute((ROOT / 'sql' / 'migrations' / f'{version}.sql').read_text())
                 conn.execute('INSERT INTO schema_migrations(version) VALUES(%s)', (version,))
