@@ -1,0 +1,23 @@
+# Known differences between the two schema paths; see scripts/check_schema_paths.py.
+# A difference that is not listed here fails the check, and so does a line here that no longer differs.
+#
+# fresh-only: observations latitude and longitude CHECK constraints (2 lines).
+#   Only sql/schema.sql has these. No migration creates them, so databases upgraded from 0001 lack
+#   the database-level bounds. The API still rejects out-of-range coordinates (pydantic ge/le).
+#   Decision needed: add a numbered migration that creates them and remove these two lines, or
+#   remove them from sql/schema.sql.
+#
+# upgrade-only: nine plain foreign keys (9 lines).
+#   Created by 0001. 0002 added composite (id, org_id) foreign keys that enforce the same references
+#   with the same delete action, so these are redundant. Fresh installs do not get the duplicates.
+fresh-only: CONSTRAINT|observations|c|CHECK (((lat >= ('-90'::integer)::double precision) AND (lat <= (90)::double precision)))
+fresh-only: CONSTRAINT|observations|c|CHECK (((lng >= ('-180'::integer)::double precision) AND (lng <= (180)::double precision)))
+upgrade-only: CONSTRAINT|alerts|f|FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE
+upgrade-only: CONSTRAINT|alerts|f|FOREIGN KEY (event_id) REFERENCES geofence_events(id) ON DELETE CASCADE
+upgrade-only: CONSTRAINT|alerts|f|FOREIGN KEY (geofence_id) REFERENCES geofences(id) ON DELETE CASCADE
+upgrade-only: CONSTRAINT|devices|f|FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE
+upgrade-only: CONSTRAINT|geofence_events|f|FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE
+upgrade-only: CONSTRAINT|geofence_events|f|FOREIGN KEY (geofence_id) REFERENCES geofences(id) ON DELETE CASCADE
+upgrade-only: CONSTRAINT|observations|f|FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE SET NULL
+upgrade-only: CONSTRAINT|observations|f|FOREIGN KEY (author_id) REFERENCES users(id)
+upgrade-only: CONSTRAINT|positions|f|FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE

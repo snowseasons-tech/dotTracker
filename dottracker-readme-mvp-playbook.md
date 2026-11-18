@@ -20,6 +20,7 @@ This README is the MVP playbook: what we're building, how, and in what order.
 10. [Risks](#risks)
 11. [Definition of Done](#definition-of-done)
 12. [Roadmap (Post-MVP)](#roadmap-post-mvp)
+13. [Status against this plan (v3.6.0)](#status-against-this-plan-v360)
 
 ---
 
@@ -74,6 +75,8 @@ dotTracker lets a small organization:
 | Monitoring | Sentry + metrics dashboard | Cheap visibility, early warning |
 | CI | Lint + tests on every push | Quality gate from day 1 |
 
+**As built (v3.6.0):** the backend is Python (FastAPI), not Node.js or Go. Devices post JSON over HTTPS, not MQTT. The main client is the responsive web dashboard in `dottracker/app/static/`. The Expo app in `mobile/` only shares location. Deployment uses Docker Compose, and the repository has no Terraform. CI runs the API checks, a schema-path check, and the mobile typecheck, tests, and audit. See [Status against this plan](#status-against-this-plan-v360) at the end.
+
 **Devices:** support one well-documented GPS tracker first (e.g., Teltonika or GT-06 class). Build a **device emulator** immediately — never block on hardware. Phone-as-tracker is a stopgap for pilots only.
 
 ---
@@ -81,7 +84,7 @@ dotTracker lets a small organization:
 ## Architecture
 
 ```
-GPS devices ──MQTT/socket──▶ Ingestion service ──▶ PostgreSQL (positions)
+GPS devices ──HTTPS POST (MQTT planned)──▶ Ingestion service ──▶ PostgreSQL (positions)
                                   │
                                   ├──▶ Geofence engine ──▶ geofence_events ──▶ Alerts
                                   └──▶ WS publish ──▶ Mobile app (live map)
@@ -161,19 +164,26 @@ Mobile app ──REST/WS──▶ API (auth, org-scoped) ──▶ assets, geofe
 ## Running Locally
 
 ```bash
-# Backend
-git clone <repo> && cd dottracker
+# Local stack: PostgreSQL 17 + PostGIS, migrations, CDOT reference data, and the API
+cd dottracker
 cp .env.example .env
-docker compose up -d          # Postgres + PostGIS + MQTT broker
-npm install && npm run migrate && npm run seed
-npm run dev                   # API + ingestion service
+docker compose up --build     # then open http://localhost:8000
 
-# Device emulator (fake GPS stream)
-npm run emulate -- --count 5
+# In the browser, choose "Initialize demo workspace" (development only)
 
-# Mobile
-cd app && npm install
-npm run start                 # Expo / Flutter dev server
+# GPS emulator (fake tracker stream)
+python3 emulator.py --count 3 --interval 5
+
+# Tests: needs a disposable PostgreSQL 17 + PostGIS 3.5 database (see dottracker/README.md)
+python -m pip install -r requirements-test.txt
+python -m pytest -q
+
+# Phone app (location sharing)
+cd ../mobile
+npm ci
+npm run typecheck
+npm test
+npm run start                 # Expo dev server; background location needs a development build
 ```
 
 ---
@@ -240,3 +250,22 @@ Manual annotations made on-site during a visual observation.
 4. Configurable alert rules
 5. Self-serve signup + billing
 6. Public API for integrations
+
+---
+
+## Status against this plan (v3.6.0)
+
+The sections above are the original plan. This section records what the repository does today.
+
+**Built as planned:** live map with status-coloured markers and WebSocket updates; asset list with search; moving, stopped and offline status; 30-day trip history; circle and polygon geofences with in-app enter and exit alerts; observation pins with capture time and an offline queue; admin and viewer roles; invitation links; organization-scoped data with cross-tenant tests; one credential per tracker.
+
+**In scope but not built:**
+- Password reset, password change, removing a user, and changing a user's role.
+- Push notifications for alerts.
+- A per-asset alert toggle. Alerts are recorded per asset, but pausing applies to a whole geofence.
+- A map, asset list and observation pins in the mobile app. The Expo app only shares the phone's location.
+- MQTT or socket device ingestion, and decoders for real tracker protocols. Devices post JSON over HTTPS.
+- Sentry and metrics. The API exposes only health endpoints.
+- Invitation email. Invitations are links an admin delivers by hand (`dottracker/README.md`).
+
+**Built beyond the scope above:** route optimization and crew dispatch, including offline status sync; safety checklists; CDOT reference stations; non-permanent inspection sites; temporary checkpoint pins. The scope table lists route optimization under "do not build". Decide whether these stay in v1 or move to the v2 board. `dottracker/AGENTS.md` asks for a follow-up backlog, and the repository does not have one yet.

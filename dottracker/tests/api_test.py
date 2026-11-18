@@ -1,4 +1,5 @@
 """PostgreSQL/PostGIS-backed security and API integration tests (CI service required)."""
+import hashlib
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -661,3 +662,74 @@ def test_trip_history_for_another_workspace_asset_is_not_found(client):
     outsider = login(client, f'viewer-isolation-{RUN}@test.invalid', 'test-viewer-password-long')
     assert client.get(f'/api/assets/{asset_id}/positions', headers=outsider).status_code == 404
     assert client.get('/api/assets/999999999/positions', headers=admin_headers).status_code == 404
+
+
+ROUTE_REQUEST = {
+    'departure_minute': 480,
+    'crew_equipment': ['chipper'],
+    'jobs': [
+        {'id': 'job-a', 'earliest_start': 540, 'latest_finish': 660, 'service_minutes': 30, 'equipment': ['chipper']},
+        {'id': 'job-b', 'earliest_start': 480, 'latest_finish': 540, 'service_minutes': 20},
+    ],
+    'travel_minutes': [[0, 30, 10], [None, 0, 20], [None, 15, 0]],
+}
+
+
+def add_user(org_id, label, role, password):
+    email = f'{label}-{RUN}@test.invalid'
+    with psycopg.connect(os.environ['DATABASE_URL']) as conn:
+        conn.execute('INSERT INTO users(org_id,email,password_hash,role) VALUES(%s,%s,%s,%s)',
+                     (org_id, email, pwd.hash(password), role))
+    return email
+
+
+def test_route_optimizer_is_admin_only_and_reports_infeasible_itineraries(client):
+    admin_headers = login(client)
+    org_id = client.get('/api/me', headers=admin_headers).json()['org_id']
+    viewer_email = add_user(org_id, 'route-viewer', 'viewer', 'test-viewer-password-long')
+    viewer_headers = login(client, viewer_email, 'test-viewer-password-long')
+    tight = {**ROUTE_REQUEST, 'jobs': [ROUTE_REQUEST['jobs'][0], {**ROUTE_REQUEST['jobs'][1], 'latest_finish': 500}]}
+    no_chipper = {**ROUTE_REQUEST, 'crew_equipment': []}
+    short_matrix = {**ROUTE_REQUEST, 'travel_minutes': [[0, 30], [None, 0]]}
+    for path in ('/api/routes/optimize', '/api/routes/reroute'):
+        assert client.post(path, json=ROUTE_REQUEST).status_code == 401
+        assert client.post(path, headers=viewer_headers, json=ROUTE_REQUEST).status_code == 403
+        plan = client.post(path, headers=admin_headers, json=ROUTE_REQUEST)
+        assert plan.status_code == 200, plan.text
+        # job-b must finish by 540, so it goes first: 10 min drive, 20 min service, then 15 min to job-a.
+        assert [stop['job_id'] for stop in plan.json()['stops']] == ['job-b', 'job-a']
+        assert plan.json()['driving_minutes'] == 25 and plan.json()['finish_minute'] == 570
+        assert client.post(path, headers=admin_headers, json=tight).status_code == 409
+        assert client.post(path, headers=admin_headers, json=no_chipper).status_code == 409
+        assert client.post(path, headers=admin_headers, json=short_matrix).status_code == 422
+
+
+def test_repeated_failed_sign_ins_are_throttled_per_email(client):
+    admin_headers = login(client)
+    org_id = client.get('/api/me', headers=admin_headers).json()['org_id']
+    password = 'throttle-test-password-long'
+    target = add_user(org_id, 'throttled', 'viewer', password)
+    bystander = add_user(org_id, 'bystander', 'viewer', password)
+
+    def sign_in(email, attempt):
+        return client.post('/api/auth/login', json={'email': email, 'password': attempt})
+
+    # Four failures do not block, and a successful sign-in clears the count.
+    for _ in range(4):
+        assert sign_in(target, 'wrong-password').status_code == 401
+    assert sign_in(target, password).status_code == 200
+    # Five consecutive failures start a 15-minute block that refuses even the right password.
+    for _ in range(5):
+        assert sign_in(target, 'wrong-password').status_code == 401
+    blocked = sign_in(target, password)
+    assert blocked.status_code == 429 and blocked.headers['retry-after'] == '900'
+    # The block is per email: another account from the same client address still signs in.
+    assert sign_in(bystander, password).status_code == 200
+    # Once the block has expired, the right password works and the attempt record is removed.
+    # TestClient reports its client address as 'testclient'; the key is sha256(address|email).
+    key = hashlib.sha256(f'testclient|{target}'.encode()).hexdigest()
+    with psycopg.connect(os.environ['DATABASE_URL']) as conn:
+        conn.execute("UPDATE login_attempts SET blocked_until = now() - interval '1 second' WHERE throttle_key=%s", (key,))
+    assert sign_in(target, password).status_code == 200
+    with psycopg.connect(os.environ['DATABASE_URL']) as conn:
+        assert conn.execute('SELECT count(*) FROM login_attempts WHERE throttle_key=%s', (key,)).fetchone()[0] == 0

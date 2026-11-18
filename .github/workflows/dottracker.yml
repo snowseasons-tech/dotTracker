@@ -50,7 +50,7 @@ jobs:
         run: python scripts/load_cdot_stations.py --data-dir ../data
         working-directory: dottracker
       - name: Python compile check
-        run: python -m py_compile app/main.py app/geometry.py emulator.py migrate.py scripts/create_org.py scripts/load_cdot_stations.py tests/api_test.py tests/test_cdot_loader.py
+        run: python -m py_compile app/main.py app/geometry.py emulator.py migrate.py scripts/create_org.py scripts/load_cdot_stations.py scripts/check_schema_paths.py tests/api_test.py tests/test_cdot_loader.py
         working-directory: dottracker
       - name: JavaScript syntax check
         run: node --input-type=module --check < app/static/app.js
@@ -66,3 +66,89 @@ jobs:
       - name: Build API container
         run: docker build -t dottracker-ci .
         working-directory: dottracker
+
+  schema-paths:
+    # A new install runs sql/schema.sql; an existing install runs 0001 plus migrate.py. Both must match,
+    # and the API suite must pass on the fresh-install database too.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_DB: dottracker
+          POSTGRES_USER: dottracker
+          POSTGRES_PASSWORD: dottracker_dev
+        ports: [5432:5432]
+        options: >-
+          --health-cmd "pg_isready -U dottracker -d dottracker"
+          --health-interval 5s --health-timeout 5s --health-retries 15
+    env:
+      APP_ENV: development
+      ALLOW_DEMO_SEED: "true"
+      JWT_SECRET: integration-test-secret-not-for-deployment-123456
+      DEVICE_TOKEN: demo-device-token
+      ADMIN_URL: postgresql://dottracker:dottracker_dev@localhost:5432/dottracker
+      UPGRADE_URL: postgresql://dottracker:dottracker_dev@localhost:5432/dottracker_upgrade
+      FRESH_URL: postgresql://dottracker:dottracker_dev@localhost:5432/dottracker_fresh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: dottracker/requirements-test.txt
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-test.txt
+        working-directory: dottracker
+      - name: Create the upgrade and fresh-install databases
+        run: psql "$ADMIN_URL" -v ON_ERROR_STOP=1 -c 'CREATE DATABASE dottracker_upgrade' -c 'CREATE DATABASE dottracker_fresh'
+      - name: Upgrade path - prior baseline, then the migration runner
+        run: |
+          psql "$UPGRADE_URL" -v ON_ERROR_STOP=1 -f sql/migrations/0001-initial.sql
+          MIGRATION_DATABASE_URL="$UPGRADE_URL" python migrate.py
+        working-directory: dottracker
+      - name: Fresh-install path - schema.sql, then the runner must apply nothing
+        run: |
+          psql "$FRESH_URL" -v ON_ERROR_STOP=1 -f sql/schema.sql
+          MIGRATION_DATABASE_URL="$FRESH_URL" python migrate.py | tee migrate-output.txt
+          if grep -q '^Applied ' migrate-output.txt; then
+            echo "::error::sql/schema.sql does not record every migration it contains"
+            exit 1
+          fi
+        working-directory: dottracker
+      - name: Compare the two schemas
+        run: python scripts/check_schema_paths.py --fresh-url "$FRESH_URL" --upgrade-url "$UPGRADE_URL"
+        working-directory: dottracker
+      - name: Load CDOT stations into the fresh-install database
+        run: python scripts/load_cdot_stations.py --data-dir ../data
+        working-directory: dottracker
+        env:
+          DATABASE_URL: ${{ env.FRESH_URL }}
+          MIGRATION_DATABASE_URL: ${{ env.FRESH_URL }}
+      - name: API tests on the fresh-install database
+        run: python -m pytest -q
+        working-directory: dottracker
+        env:
+          DATABASE_URL: ${{ env.FRESH_URL }}
+          MIGRATION_DATABASE_URL: ${{ env.FRESH_URL }}
+
+  mobile:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - name: Install dependencies from the lockfile
+        run: npm ci
+      - name: Type check
+        run: npm run typecheck
+      - name: Unit tests
+        run: npm test
+      - name: Dependency audit (fails on critical advisories; high ones are tracked separately)
+        run: npm audit --audit-level=critical
