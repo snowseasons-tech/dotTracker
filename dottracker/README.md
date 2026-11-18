@@ -58,6 +58,17 @@ npm install playwright@1 && npx playwright install chromium
 DOTTRACKER_URL=http://localhost:8000 DOTTRACKER_EMAIL=admin@dottracker.local DOTTRACKER_PASSWORD=dottracker-demo node tests/browser/acceptance.js
 ```
 
+## Offline queue checks
+
+`tests/browser/offline-queues.js` checks the four offline queues in a real browser. It takes the browser offline, writes an observation pin, a temporary checkpoint, a safety checklist, and a dispatch status change, reconnects, and checks that each reaches the server exactly once. A replayed item must not duplicate it. A failed send must keep every queued item for the next attempt.
+
+```bash
+npm install playwright@1 && npx playwright install chromium
+DOTTRACKER_URL=http://localhost:8000 DOTTRACKER_EMAIL=admin@dottracker.local DOTTRACKER_PASSWORD=dottracker-demo node tests/browser/offline-queues.js
+```
+
+It creates assets, pins, checklists and a dispatch route, so run it only against a development or staging workspace. The checks are not run in CI yet.
+
 ## Base map and per-person alert reads (v3.5)
 
 **Base map.** Set `MAP_STYLE_URL` to choose the map under dotTracker's layers:
