@@ -205,6 +205,11 @@ The production compose profile runs as a non-root user, drops Linux capabilities
 - `GET /api/users`, `PATCH /api/users/{id}` (admin: `role`, `disabled`), `POST /api/users/{id}/sessions/revoke` (admin), `POST /api/users/{id}/password-reset` (admin; returns a one-use link token), `POST /api/auth/password-reset/accept`, `POST /api/me/password`
 - `GET /api/assets`, `POST /api/assets` (admin; optional `device_id` provisions a tracker)
 - `POST /api/assets/{id}/device/rotate` (admin)
+- `POST /api/assets/{id}/device` (admin; provisions a tracker for an existing asset, `device_id` as a query parameter)
+- `POST /api/routes/optimize`, `POST /api/routes/reroute` (admin; calculate an itinerary and store nothing)
+- `GET /api/assets/{id}/dispatch-route` (any signed-in user), `PUT /api/assets/{id}/dispatch-route` (admin; publishes a plan), `POST /api/assets/{id}/dispatch-route/status` (`Idempotency-Key` header)
+- `POST /api/safety/submissions` (any signed-in user), `GET /api/safety/submissions` (admin)
+- `GET /api/v1/checkpoints?west=&south=&east=&north=` (active checkpoint reports in a bounding box)
 - `GET /api/assets/{id}/positions?from=&to=` (last 30 days)
 - `GET|POST /api/geofences`, `DELETE /api/geofences/{id}` (writes admin-only)
 - `POST|GET /api/observations`
@@ -256,7 +261,7 @@ For a closure, call `POST /api/routes/reroute` with the same format, using the c
 
 ### Publish and sync a route
 
-Use the same route request body with `PUT /api/assets/{asset_id}/dispatch-route` to save and publish a plan as a dispatcher. The browser's **Dispatch** tab shows the saved stop order for the selected crew asset. The organization-scoped `route_updated` WebSocket event includes the asset ID and revision. After reconnecting, the browser waits for the socket's `sync_ready` acknowledgement and fetches the latest saved plan. This also lets clients recover a plan published while they were disconnected. Existing databases require migration `0003-dispatch-routes` before using Dispatch.
+Use the same route request body with `PUT /api/assets/{asset_id}/dispatch-route` to save and publish a plan as an administrator. The browser's **Dispatch** tab shows the saved stop order for the selected crew asset. The organization-scoped `route_updated` WebSocket event includes the asset ID and revision. After reconnecting, the browser waits for the socket's `sync_ready` acknowledgement and fetches the latest saved plan. This also lets clients recover a plan published while they were disconnected. Existing databases require migration `0003-dispatch-routes` before using Dispatch.
 
 The live event hub runs in the API process. Keep the existing single-worker deployment for live updates until a shared event transport is configured. Native background push registration and delivery require a mobile client and push provider configuration.
 
@@ -287,7 +292,7 @@ WHERE org_id = 1 AND kind = 'mobile_dot_checkpoint' AND expires_at > now()
 
 As an admin, choose **Geofences → Draw polygon**. Tap or click the map to add corners. Use **Undo corner** or **Reset** to adjust the draft. After placing at least three corners, choose **Close boundary** to preview the filled area, then **Name and save**. The server validates the boundary with PostGIS before saving it.
 
-Native clients can save a polygon with `POST /api/v1/geofences`, a dispatcher bearer token, and JSON containing `name` and `coordinates`. Send 3 to 500 distinct corners in longitude, latitude order. A repeated closing coordinate is optional. The endpoint returns HTTP 201 with the saved geofence. Apply migration `0007-geofence-spatial` to backfill and index valid polygon boundaries. Circle geofences keep their existing center and radius representation.
+Native clients can save a polygon with `POST /api/v1/geofences`, an administrator's bearer token, and JSON containing `name` and `coordinates`. Send 3 to 500 distinct corners in longitude, latitude order. A repeated closing coordinate is optional. The endpoint returns HTTP 201 with the saved geofence. Apply migration `0007-geofence-spatial` to backfill and index valid polygon boundaries. Circle geofences keep their existing center and radius representation.
 
 ### Crew safety checklist
 
