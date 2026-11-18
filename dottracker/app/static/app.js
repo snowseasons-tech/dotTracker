@@ -157,6 +157,12 @@ function renderTeam(root) {
                 <button class="btn" id="copyMemberReset" type="button">Copy reset link</button>
             </section>
         </section>
+        <section id="teamTrackers">
+            <h3>Trackers</h3>
+            <p class="assetmeta">Each tracker sends its position with its own credential. Rotating a credential revokes the old one at once. Attach a tracker to an asset that has none.</p>
+            <div class="error" id="trackerError" role="status" aria-live="polite"></div>
+            <div id="trackerList"><p class="assetmeta">Loading trackers…</p></div>
+        </section>
     </section>`;
     $('#teamInviteForm').onsubmit = async event => {
         event.preventDefault();
@@ -194,6 +200,7 @@ function renderTeam(root) {
     };
     $('#copyMemberReset').onclick = () => copyLink('#memberResetLink', 'Reset link copied');
     loadMembers();
+    loadTrackers();
 }
 
 async function copyLink(selector, doneMessage) {
@@ -201,11 +208,13 @@ async function copyLink(selector, doneMessage) {
     try {
         await navigator.clipboard.writeText(input.value);
         toast(doneMessage);
+        return true;
     } catch {
         input.focus();
         input.select();
         input.setSelectionRange(0, input.value.length);
         toast('Select the link and copy it');
+        return false;
     }
 }
 
@@ -365,6 +374,94 @@ $('#resetBack').onclick = () => {
     $('#resetAcceptance').hidden = true;
     $('#signInPanel').hidden = false;
 };
+
+async function loadTrackers() {
+    const list = $('#trackerList');
+    if (!list) return;
+    try {
+        const rows = await api('/assets');
+        list.replaceChildren(...rows.map(trackerRow));
+        $('#trackerError').textContent = '';
+    } catch (error) {
+        $('#trackerError').textContent = error.message;
+    }
+}
+
+function trackerRow(asset) {
+    const row = document.createElement('div');
+    row.style.cssText = 'display:grid;gap:6px;padding:10px 0;border-top:1px solid var(--line)';
+    const name = document.createElement('div');
+    name.textContent = asset.name;
+    const status = document.createElement('div');
+    status.className = 'assetmeta';
+    status.textContent = asset.device_id ? `Tracker ${asset.device_id}` : 'No tracker attached';
+    const controls = document.createElement('div');
+    controls.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px';
+    controls.append(asset.device_id
+        ? memberButton('Rotate credential', () => rotateTracker(asset))
+        : memberButton('Attach tracker', () => attachTracker(asset)));
+    row.append(name, status, controls);
+    return row;
+}
+
+function attachTracker(asset) {
+    $('#modalTitle').textContent = `Attach a tracker to ${asset.name}`;
+    $('#modalSub').textContent = 'Enter the tracker ID from the device or its setup record. Its credential is shown once, next.';
+    $('#modalFields').innerHTML = `<label class="field">Tracker ID<input id="trackerIdInput" maxlength="120" autocomplete="off"></label><p id="trackerModalError" class="error" role="alert"></p>`;
+    $('#modalSave').textContent = 'Attach tracker';
+    $('#modalSave').onclick = async () => {
+        const id = $('#trackerIdInput').value.trim();
+        const feedback = $('#trackerModalError');
+        feedback.textContent = '';
+        if (!id) { feedback.textContent = 'Enter the tracker ID.'; return; }
+        const save = $('#modalSave');
+        save.disabled = true;
+        try {
+            const result = await api(`/assets/${asset.id}/device?device_id=${encodeURIComponent(id)}`, {method: 'POST'});
+            showIssuedToken(result, `${result.device_id} is attached to ${asset.name}`);
+            loadTrackers();
+            refreshAssets();
+        } catch (error) {
+            feedback.textContent = error.message;
+        } finally {
+            save.disabled = false;
+        }
+    };
+    $('#modalback').style.display = 'grid';
+    $('#trackerIdInput').focus();
+}
+
+function rotateTracker(asset) {
+    $('#modalTitle').textContent = `Rotate the credential for ${asset.name}?`;
+    $('#modalSub').textContent = `The current credential stops working at once. Tracker ${asset.device_id} stops sharing its position until it has the new credential.`;
+    $('#modalFields').innerHTML = `<p id="rotateError" class="error" role="alert"></p>`;
+    $('#modalSave').textContent = 'Rotate credential';
+    $('#modalSave').onclick = async () => {
+        const save = $('#modalSave');
+        save.disabled = true;
+        try {
+            const result = await api(`/assets/${asset.id}/device/rotate`, {method: 'POST'});
+            showIssuedToken(result, `New credential for ${result.device_id}`);
+            loadTrackers();
+        } catch (error) {
+            $('#rotateError').textContent = error.message;
+        } finally {
+            save.disabled = false;
+        }
+    };
+    $('#modalback').style.display = 'grid';
+}
+
+function showIssuedToken(result, title) {
+    $('#modalTitle').textContent = title;
+    $('#modalSub').textContent = 'This secret is shown once. Copy it into the tracker configuration now.';
+    $('#modalFields').innerHTML = `<label class="field">Device token<textarea id="issuedToken" readonly rows="3"></textarea></label><div style="font-size:11px;color:#ffcc7a">The token is stored as a hash. It cannot be recovered after you close this window.</div>`;
+    $('#issuedToken').value = result.device_token;
+    $('#modalSave').textContent = 'Copy token and close';
+    $('#modalSave').onclick = async () => {
+        if (await copyLink('#issuedToken', 'Token copied')) closeModal();
+    };
+}
 
 function renderSidebar(){let counts={moving:0,stopped:0,offline:0};assets.forEach(a=>counts[a.status]++);$('#movingCount').textContent=counts.moving;$('#stoppedCount').textContent=counts.stopped;$('#offlineCount').textContent=counts.offline;let root=$('#items');if(view==='team'){if(!root.querySelector('#teamPanel'))renderTeam(root);return}if(view==='safety'){if(!root.querySelector('#safetyPanel'))renderSafety(root);return}if(view==='dispatch'){renderDispatch(root);return}if(view==='stations'){renderStations(root);return}if(view==='history'&&root.querySelector('#tripForm'))return;if(view==='assets'){let q=$('#search').value.toLowerCase();let list=assets.filter(a=>a.name.toLowerCase().includes(q));root.innerHTML=list.map(a=>`<div class="asset ${a.id===selectedAsset?'sel':''}" data-id="${a.id}"><i class="assetdot ${a.status}"></i><div class="assetinfo"><div class="assetname">${esc(a.name)}</div><div class="assetmeta">${esc(a.kind)} · ${a.recorded_at?new Date(a.recorded_at).toLocaleTimeString():'No GPS fix'}</div></div><span class="speed">${a.speed?Math.round(a.speed)+' km/h':''}</span></div>`).join('')||'<div class="empty">No assets match your search.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{selectedAsset=+el.dataset.id;let a=assets.find(x=>x.id===selectedAsset);if(a?.lat)map.flyTo({center:[a.lng,a.lat],zoom:14});renderSidebar()});return}if(view==='observations'){root.innerHTML=observations.map(o=>`<div class="asset" data-id="${o.id}"><i class="assetdot" style="background:#70a7ff"></i><div class="assetinfo"><div class="assetname">${esc(o.note||(o.kind==='mobile_dot_checkpoint'?'Temporary inspection checkpoint':'Observation pin'))}</div><div class="assetmeta">${esc(o.author)} · ${new Date(o.observed_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No observations yet. Right-click the map to add one.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{let o=observations.find(x=>x.id==el.dataset.id);map.flyTo({center:[o.lng,o.lat],zoom:15})});return}if(view==='alerts'){renderAlerts(root);return}root.innerHTML='<div class="empty">Select an asset to browse up to 30 days of trip history.</div>'}
 function pendingObservationQueue(){try{let value=JSON.parse(localStorage.getItem('dt_pending_observations')||'[]');if(!Array.isArray(value))return [];return value.filter(o=>o&&typeof o.client_id==='string'&&typeof o.note==='string'&&Number.isFinite(o.lat)&&o.lat>=-90&&o.lat<=90&&Number.isFinite(o.lng)&&o.lng>=-180&&o.lng<=180&&Number.isInteger(o.user_id)&&Number.isInteger(o.org_id)).slice(0,1000)}catch{return []}}
