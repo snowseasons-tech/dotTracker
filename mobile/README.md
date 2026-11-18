@@ -49,3 +49,8 @@ npx expo start --dev-client
 ## Status
 Verified: TypeScript, upload/queue unit tests (offline, 401/404, 422, 500, queue cap), iOS JS bundle builds.
 Not verified: running on a device, background tracking, EAS build, a live ingest call, battery impact.
+
+## Dependency audit
+`npm audit` reports 26 high-severity advisories. All trace to one advisory, GHSA-fc5q-39xc-vjpf (a ReDoS in `picomatch`). No patched `picomatch` is published, so upgrading React Native or Expo does not clear them. The only fix npm suggests is a downgrade to Expo 54, which is not a fix. The `picomatch` copies come from build-time tooling (Expo CLI, Metro, tinyglobby); whether any of it reaches the app bundle is not verified.
+
+Decision: CI fails on critical advisories only. Dependabot watches this tree and will propose updates when a fix ships. Re-check GHSA-fc5q-39xc-vjpf at that point, and tighten the CI gate to high then.

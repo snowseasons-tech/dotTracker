@@ -55,10 +55,20 @@ dotTracker lets a small organization:
 - Driver behavior analytics, fuel/telematics, ELD compliance
 - Custom report builder, public API for third parties
 - Billing/subscription flows (onboard manually; sell first)
-- Offline-first map rendering, route optimization
+- Offline-first map rendering
 - **Photo attachments on observation pins** → v2. Keep a nullable photo ref in the `observations` table so v2 needs no migration.
 
 **Scope-creep rule:** every new idea goes to the v2 board, not the MVP repo.
+
+### Added to v1 after the original plan
+
+These features are built, tested, and part of v1. Each is documented in `dottracker/README.md` and `dottracker/CHANGELOG.md`.
+
+- Route optimization and crew dispatch, with offline status sync (`/api/routes/optimize`, `/reroute`, and the Dispatch tab).
+- Crew safety checklists, with offline sync and admin review.
+- CDOT reference data: ports of entry, highway milepoints, and maintenance patrol sections.
+- Non-permanent safety inspection sites, placed by admins and expiring within 30 days.
+- Temporary inspection checkpoint pins, which expire after two hours.
 
 ---
 
@@ -268,4 +278,4 @@ The sections above are the original plan. This section records what the reposito
 - Sentry and metrics. The API exposes only health endpoints.
 - Invitation email. Invitations are links an admin delivers by hand (`dottracker/README.md`).
 
-**Built beyond the scope above:** route optimization and crew dispatch, including offline status sync; safety checklists; CDOT reference stations; non-permanent inspection sites; temporary checkpoint pins. The scope table lists route optimization under "do not build". Decide whether these stay in v1 or move to the v2 board. `dottracker/AGENTS.md` asks for a follow-up backlog, and the repository does not have one yet.
+**Added to v1 beyond the original plan:** route optimization and crew dispatch, safety checklists, CDOT reference stations, inspection sites, and checkpoint pins. See the section above. `dottracker/AGENTS.md` asks for a follow-up backlog for out-of-scope ideas, and the repository does not have one yet.

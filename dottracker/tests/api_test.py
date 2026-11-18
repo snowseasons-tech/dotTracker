@@ -901,3 +901,12 @@ def test_password_change_is_throttled_after_five_wrong_current_passwords(client)
     with psycopg.connect(os.environ['DATABASE_URL']) as conn:
         conn.execute("UPDATE login_attempts SET blocked_until = now() - interval '1 second' WHERE throttle_key=%s", (key,))
     assert client.post('/api/me/password', headers=headers, json=body).status_code == 200
+
+
+def test_observation_coordinates_are_bounded_by_the_database(client):
+    login(client)
+    with psycopg.connect(os.environ['DATABASE_URL']) as conn:
+        org_id, author_id = conn.execute("SELECT org_id, id FROM users WHERE email='admin@dottracker.local'").fetchone()
+    with pytest.raises(psycopg.errors.CheckViolation):
+        with psycopg.connect(os.environ['DATABASE_URL']) as conn:
+            conn.execute('INSERT INTO observations(org_id,author_id,lat,lng,observed_at) VALUES(%s,%s,95,0,now())', (org_id, author_id))

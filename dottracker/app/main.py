@@ -61,6 +61,7 @@ SUPPORTED_SCHEMA_VERSIONS=frozenset({
     '0011-alert-reads',
     '0012-function-search-path',
     '0013-account-management',
+    '0014-observation-bounds',
 })
 
 # Base map: OpenFreeMap by default, any HTTPS style (e.g. a self-hosted tile server),
