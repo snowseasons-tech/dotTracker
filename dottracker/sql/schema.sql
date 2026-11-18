@@ -196,3 +196,5 @@ INSERT INTO schema_migrations(version) VALUES('0012-function-search-path') ON CO
 CREATE TABLE IF NOT EXISTS password_resets (id BIGSERIAL PRIMARY KEY, org_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, user_id BIGINT NOT NULL, token_hash TEXT NOT NULL UNIQUE, requested_by BIGINT NOT NULL, expires_at TIMESTAMPTZ NOT NULL, used_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), FOREIGN KEY(user_id,org_id) REFERENCES users(id,org_id) ON DELETE CASCADE, FOREIGN KEY(requested_by,org_id) REFERENCES users(id,org_id) ON DELETE CASCADE);
 CREATE INDEX IF NOT EXISTS password_resets_pending_idx ON password_resets (user_id) WHERE used_at IS NULL;
 INSERT INTO schema_migrations(version) VALUES('0013-account-management') ON CONFLICT DO NOTHING;
+-- dotTracker v3.7: observation coordinate bounds (migration 0014). The bounds are already inline in the observations table above.
+INSERT INTO schema_migrations(version) VALUES('0014-observation-bounds') ON CONFLICT DO NOTHING;

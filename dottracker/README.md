@@ -1,6 +1,6 @@
 # dotTracker v3 · production-oriented MVP
 
-Development and release gates: see [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md) and the step-by-step [PRODUCTION_WORKFLOW.md](PRODUCTION_WORKFLOW.md). The API refuses to start unless all supported migrations through `0013-account-management` are applied.
+Development and release gates: see [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md) and the step-by-step [PRODUCTION_WORKFLOW.md](PRODUCTION_WORKFLOW.md). The API refuses to start unless all supported migrations through `0014-observation-bounds` are applied.
 
 A pilot fleet-tracking application with a responsive MapLibre dashboard, FastAPI API, PostgreSQL/PostGIS schema, Argon2id password hashing, rotating opaque refresh sessions, org-scoped access, individual tracker credentials, short-lived one-use WebSocket tickets, duplicate-fix and observation idempotency, offline observation queueing, trip history, circle/polygon geofences, alerts, and observation pins.
 
@@ -137,7 +137,7 @@ A signed-out session keeps its current access token until the token expires (`AC
 
 Use the step-by-step [production development and release workflow](PRODUCTION_WORKFLOW.md) for database setup, migration, TLS ingress, staging acceptance, backup restore, release, and rollback.
 
-The production Compose profile expects an operator-provisioned PostgreSQL 17 + PostGIS 3.5 database, a private TLS reverse proxy or managed edge, and separate least-privilege runtime and migration credentials. New databases receive `sql/schema.sql` once; supported existing databases are upgraded by `migrate.py`. The API refuses to start until migrations 0002 through 0013 are recorded.
+The production Compose profile expects an operator-provisioned PostgreSQL 17 + PostGIS 3.5 database, a private TLS reverse proxy or managed edge, and separate least-privilege runtime and migration credentials. New databases receive `sql/schema.sql` once; supported existing databases are upgraded by `migrate.py`. The API refuses to start until migrations 0002 through 0014 are recorded.
 
 Production hosting, database credentials, TLS ingress, monitoring, and a verified backup restore are not configured in this repository. dotTracker is not production-verified until the staging gates in the workflow have passed.
 
