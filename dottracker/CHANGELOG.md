@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — account management, proxy setting, ingest limit
+
+- **Account management:** migration `0013-account-management` adds `users.disabled_at` and `password_resets`. Admins can list members, change roles, disable and enable accounts, sign a member out everywhere, and issue one-use password reset links that expire in 48 hours. A disabled account cannot sign in or renew a session, and its access stops at the next request. The Team tab shows the member list with these actions, and a reset-link page sets the new password.
+- **Self-service password change:** members change their own password from **Password**. It needs the current password, signs them out everywhere, and is throttled like sign-in after five wrong current passwords.
+- **Tracker ingest limit:** `POST /api/ingest` allows `INGEST_LIMIT_PER_MINUTE` fixes per tracker per minute (default 120). Refused requests get HTTP 429 with `Retry-After`. Wrong-token attempts count too.
+- **Proxy trust is configurable:** `FORWARDED_ALLOW_IPS` sets the proxy addresses that the production container trusts for forwarded headers (default `127.0.0.1`). The API refuses to start with `*` or an empty value.
+- **Baseline fix:** a fresh install from `sql/schema.sql` now has the `geofence_events` uniqueness that migration 0001 defines. CI builds a fresh and an upgraded database and fails on any unlisted difference between them.
+- **Known limit:** sign out everywhere ends refresh sessions. An access token already issued lasts until it expires (`ACCESS_TOKEN_MINUTES`, 30 by default). Disabling a user is immediate.
+
 ## 3.6.0 — Phone layout, truthful offline status, browser acceptance checks
 
 - **Phone layout:** at phone widths the page no longer scrolls sideways (it was 685 px wide at 375 px). The map toolbar is one row you can swipe inside the map, kept clear of the zoom buttons; the header drops the email address and subtitle. Staging rehearsal U7.

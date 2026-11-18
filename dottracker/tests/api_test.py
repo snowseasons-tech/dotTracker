@@ -17,7 +17,7 @@ from uuid import uuid4 as _uuid4  # noqa: E402
 
 RUN = _uuid4().hex[:8]  # test-created accounts get a per-run suffix so the suite can rerun on one database
 
-from app.main import map_settings, app, pwd, SUPPORTED_SCHEMA_VERSIONS, missing_schema_versions, demo_seed_enabled  # noqa: E402
+from app.main import map_settings, app, pwd, SUPPORTED_SCHEMA_VERSIONS, missing_schema_versions, demo_seed_enabled, validated_forwarded_allow_ips  # noqa: E402
 
 
 @pytest.fixture(scope='session')
@@ -733,3 +733,171 @@ def test_repeated_failed_sign_ins_are_throttled_per_email(client):
     assert sign_in(target, password).status_code == 200
     with psycopg.connect(os.environ['DATABASE_URL']) as conn:
         assert conn.execute('SELECT count(*) FROM login_attempts WHERE throttle_key=%s', (key,)).fetchone()[0] == 0
+
+
+def sign_in_tokens(client, email, password):
+    response = client.post('/api/auth/login', json={'email': email, 'password': password})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def user_id_for(client, admin_headers, email):
+    return next(row['id'] for row in client.get('/api/users', headers=admin_headers).json() if row['email'] == email)
+
+
+def test_disabled_users_lose_access_at_once_and_role_changes_apply_without_signing_in(client):
+    admin_headers = login(client)
+    admin_id = client.get('/api/me', headers=admin_headers).json()['id']
+    org_id = client.get('/api/me', headers=admin_headers).json()['org_id']
+    password = 'account-test-password-long'
+    member = add_user(org_id, 'member', 'viewer', password)
+    member_id = user_id_for(client, admin_headers, member)
+    old = sign_in_tokens(client, member, password)
+    old_headers = {'Authorization': f"Bearer {old['access_token']}"}
+    assert client.get('/api/assets', headers=old_headers).status_code == 200
+
+    disabled = client.patch(f'/api/users/{member_id}', headers=admin_headers, json={'disabled': True})
+    assert disabled.status_code == 200 and disabled.json()['disabled_at'] is not None
+    assert client.get('/api/me', headers=old_headers).status_code == 401
+    assert client.post('/api/auth/login', json={'email': member, 'password': password}).status_code == 401
+    assert client.post('/api/auth/refresh', json={'refresh_token': old['refresh_token']}).status_code == 401
+
+    assert client.patch(f'/api/users/{member_id}', headers=admin_headers, json={'disabled': False}).json()['disabled_at'] is None
+    fresh = sign_in_tokens(client, member, password)
+    member_headers = {'Authorization': f"Bearer {fresh['access_token']}"}
+    assert client.post('/api/assets', headers=member_headers, json={'name': f'Viewer write {RUN}'}).status_code == 403
+    assert client.patch(f'/api/users/{member_id}', headers=admin_headers, json={'role': 'admin'}).json()['role'] == 'admin'
+    assert client.post('/api/assets', headers=member_headers, json={'name': f'Promoted write {RUN}'}).status_code == 200
+    assert client.patch(f'/api/users/{member_id}', headers=admin_headers, json={'role': 'viewer'}).json()['role'] == 'viewer'
+    assert client.post('/api/assets', headers=member_headers, json={'name': f'Demoted write {RUN}'}).status_code == 403
+
+    # Sign out everywhere: the refresh session is revoked and the account keeps working with a new sign-in.
+    again = sign_in_tokens(client, member, password)
+    revoked = client.post(f'/api/users/{member_id}/sessions/revoke', headers=admin_headers)
+    assert revoked.status_code == 200 and revoked.json()['revoked_sessions'] >= 1
+    assert client.post('/api/auth/refresh', json={'refresh_token': again['refresh_token']}).status_code == 401
+
+    # Guards: an administrator cannot lock themselves out, and every change must name something.
+    assert client.patch(f'/api/users/{admin_id}', headers=admin_headers, json={'disabled': True}).status_code == 409
+    assert client.patch(f'/api/users/{admin_id}', headers=admin_headers, json={'role': 'viewer'}).status_code == 409
+    assert client.patch(f'/api/users/{member_id}', headers=admin_headers, json={}).status_code == 422
+    assert client.patch('/api/users/999999999', headers=admin_headers, json={'disabled': True}).status_code == 404
+    assert client.patch(f'/api/users/{member_id}', headers=member_headers, json={'disabled': True}).status_code == 403
+    assert client.get('/api/users', headers=member_headers).status_code == 403
+
+
+def create_workspace(name):
+    with psycopg.connect(os.environ['DATABASE_URL']) as conn:
+        return conn.execute('INSERT INTO organizations(name) VALUES(%s) RETURNING id', (name,)).fetchone()[0]
+
+
+def test_user_management_is_limited_to_the_administrators_own_workspace(client):
+    admin_headers = login(client)
+    org_a = client.get('/api/me', headers=admin_headers).json()['org_id']
+    org_b = create_workspace(f'Account scope {RUN}')
+    b_admin = add_user(org_b, 'tenant-b-admin', 'admin', 'tenant-b-admin-password')
+    b_headers = login(client, b_admin, 'tenant-b-admin-password')
+    a_viewer = add_user(org_a, 'tenant-a-viewer', 'viewer', 'tenant-a-viewer-password')
+    a_viewer_id = user_id_for(client, admin_headers, a_viewer)
+    listed_by_a = {row['email'] for row in client.get('/api/users', headers=admin_headers).json()}
+    listed_by_b = {row['email'] for row in client.get('/api/users', headers=b_headers).json()}
+    assert a_viewer in listed_by_a and b_admin not in listed_by_a
+    assert a_viewer not in listed_by_b and b_admin in listed_by_b
+    assert client.patch(f'/api/users/{a_viewer_id}', headers=b_headers, json={'disabled': True}).status_code == 404
+    assert client.post(f'/api/users/{a_viewer_id}/password-reset', headers=b_headers).status_code == 404
+    assert client.post(f'/api/users/{a_viewer_id}/sessions/revoke', headers=b_headers).status_code == 404
+    # Refused attempts changed nothing: the other workspace's member still signs in.
+    sign_in_tokens(client, a_viewer, 'tenant-a-viewer-password')
+
+
+def test_password_reset_is_admin_issued_single_use_and_signs_sessions_out(client):
+    admin_headers = login(client)
+    admin_id = client.get('/api/me', headers=admin_headers).json()['id']
+    org_id = client.get('/api/me', headers=admin_headers).json()['org_id']
+    user = add_user(org_id, 'reset-user', 'viewer', 'reset-test-old-password')
+    user_id = user_id_for(client, admin_headers, user)
+    old_tokens = sign_in_tokens(client, user, 'reset-test-old-password')
+    assert client.post(f'/api/users/{admin_id}/password-reset', headers=admin_headers).status_code == 409
+
+    token = client.post(f'/api/users/{user_id}/password-reset', headers=admin_headers).json()['reset_token']
+    assert client.post('/api/auth/password-reset/accept', json={'token': 'x' * 32, 'password': 'reset-test-new-password'}).status_code == 400
+    assert client.post('/api/auth/password-reset/accept', json={'token': token, 'password': 'too-short'}).status_code == 422
+    accepted = client.post('/api/auth/password-reset/accept', json={'token': token, 'password': 'reset-test-new-password'})
+    assert accepted.status_code == 200 and accepted.json() == {'password_updated': True}
+    assert client.post('/api/auth/password-reset/accept', json={'token': token, 'password': 'reset-test-third-password'}).status_code == 400
+    assert client.post('/api/auth/refresh', json={'refresh_token': old_tokens['refresh_token']}).status_code == 401
+    assert client.post('/api/auth/login', json={'email': user, 'password': 'reset-test-old-password'}).status_code == 401
+    sign_in_tokens(client, user, 'reset-test-new-password')
+
+    # A newer link replaces an unused one.
+    first = client.post(f'/api/users/{user_id}/password-reset', headers=admin_headers).json()['reset_token']
+    second = client.post(f'/api/users/{user_id}/password-reset', headers=admin_headers).json()['reset_token']
+    assert client.post('/api/auth/password-reset/accept', json={'token': first, 'password': 'superseded-password-value'}).status_code == 400
+    # Links expire: move the second one past its 48 hours.
+    with psycopg.connect(os.environ['DATABASE_URL']) as conn:
+        conn.execute("UPDATE password_resets SET expires_at = now() - interval '1 minute' WHERE token_hash=%s",
+                     (hashlib.sha256(second.encode()).hexdigest(),))
+    assert client.post('/api/auth/password-reset/accept', json={'token': second, 'password': 'expired-password-value'}).status_code == 400
+    # A link cannot re-enable a disabled account, and a disabled account cannot be issued one.
+    pending = client.post(f'/api/users/{user_id}/password-reset', headers=admin_headers).json()['reset_token']
+    assert client.patch(f'/api/users/{user_id}', headers=admin_headers, json={'disabled': True}).status_code == 200
+    assert client.post(f'/api/users/{user_id}/password-reset', headers=admin_headers).status_code == 409
+    assert client.post('/api/auth/password-reset/accept', json={'token': pending, 'password': 'disabled-password-value'}).status_code == 400
+
+
+def test_changing_your_own_password_needs_the_current_one_and_signs_out_everywhere(client):
+    org_id = client.get('/api/me', headers=login(client)).json()['org_id']
+    user = add_user(org_id, 'self-change', 'viewer', 'self-change-old-password')
+    tokens = sign_in_tokens(client, user, 'self-change-old-password')
+    headers = {'Authorization': f"Bearer {tokens['access_token']}"}
+    body = {'current_password': 'self-change-old-password', 'new_password': 'self-change-new-password'}
+    assert client.post('/api/me/password', json=body).status_code == 401
+    wrong = client.post('/api/me/password', headers=headers, json={**body, 'current_password': 'not-the-password'})
+    assert wrong.status_code == 400  # 400, not 401, so the browser does not try to renew the session
+    changed = client.post('/api/me/password', headers=headers, json=body)
+    assert changed.status_code == 200 and changed.json() == {'password_updated': True, 'signed_out': True}
+    assert client.post('/api/auth/refresh', json={'refresh_token': tokens['refresh_token']}).status_code == 401
+    assert client.post('/api/auth/login', json={'email': user, 'password': 'self-change-old-password'}).status_code == 401
+    sign_in_tokens(client, user, 'self-change-new-password')
+
+
+def test_ingest_limits_each_tracker_and_counts_wrong_tokens(client):
+    headers = login(client)
+    tracker = client.post('/api/assets', headers=headers, json={'name': f'Rate limit {RUN}', 'device_id': f'limit-{RUN}'}).json()
+    other = client.post('/api/assets', headers=headers, json={'name': f'Rate limit other {RUN}', 'device_id': f'limit-other-{RUN}'}).json()
+    now = datetime.now(timezone.utc)
+
+    def fix(device_id, token, seconds_ago):
+        return {'device_id': device_id, 'token': token, 'lat': 39.7, 'lng': -105.0, 'speed': 1,
+                'recorded_at': (now - timedelta(seconds=seconds_ago)).isoformat()}
+
+    # Wrong-token attempts are refused as 401 but still use up the tracker's allowance of 120 a minute.
+    for attempt in range(120):
+        assert client.post('/api/ingest', json=fix(tracker['device_id'], 'wrong-token-value-123', 100 + attempt)).status_code == 401
+    limited = client.post('/api/ingest', json=fix(tracker['device_id'], tracker['device_token'], 10))
+    assert limited.status_code == 429 and int(limited.headers['retry-after']) >= 1
+    assert client.post('/api/ingest', json=fix(other['device_id'], other['device_token'], 10)).status_code == 200
+
+
+def test_forwarded_allow_ips_must_name_a_proxy_and_never_a_wildcard():
+    assert validated_forwarded_allow_ips('172.17.0.1') == '172.17.0.1'
+    assert validated_forwarded_allow_ips(' 172.17.0.1 , 127.0.0.1 ') == '172.17.0.1,127.0.0.1'
+    for refused in ('*', '127.0.0.1,*', '', ' , '):
+        with pytest.raises(RuntimeError):
+            validated_forwarded_allow_ips(refused)
+
+
+def test_password_change_is_throttled_after_five_wrong_current_passwords(client):
+    org_id = client.get('/api/me', headers=login(client)).json()['org_id']
+    user = add_user(org_id, 'change-throttle', 'viewer', 'change-throttle-password')
+    tokens = sign_in_tokens(client, user, 'change-throttle-password')
+    headers = {'Authorization': f"Bearer {tokens['access_token']}"}
+    body = {'current_password': 'change-throttle-password', 'new_password': 'change-throttle-new-password'}
+    for _ in range(5):
+        assert client.post('/api/me/password', headers=headers, json={**body, 'current_password': 'guess-number'}).status_code == 400
+    blocked = client.post('/api/me/password', headers=headers, json=body)
+    assert blocked.status_code == 429 and blocked.headers['retry-after'] == '900'
+    key = hashlib.sha256(f"password-change|{client.get('/api/me', headers=headers).json()['id']}".encode()).hexdigest()
+    with psycopg.connect(os.environ['DATABASE_URL']) as conn:
+        conn.execute("UPDATE login_attempts SET blocked_until = now() - interval '1 second' WHERE throttle_key=%s", (key,))
+    assert client.post('/api/me/password', headers=headers, json=body).status_code == 200

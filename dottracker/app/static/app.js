@@ -146,6 +146,17 @@ function renderTeam(root) {
             <label class="field">Invite link<input id="teamInviteLink" readonly></label>
             <button class="btn" id="copyTeamInvite" type="button">Copy invite link</button>
         </section>
+        <section id="teamMembers">
+            <h3>Members</h3>
+            <p class="assetmeta">Disabling an account signs it out and stops its access at once. Role changes apply to the next request. A reset link works once and expires in 48 hours.</p>
+            <div class="error" id="memberError" role="status" aria-live="polite"></div>
+            <div id="memberList"><p class="assetmeta">Loading members…</p></div>
+            <section id="memberResetResult" hidden>
+                <p id="memberResetMessage" role="status"></p>
+                <label class="field">Reset link<input id="memberResetLink" readonly></label>
+                <button class="btn" id="copyMemberReset" type="button">Copy reset link</button>
+            </section>
+        </section>
     </section>`;
     $('#teamInviteForm').onsubmit = async event => {
         event.preventDefault();
@@ -181,7 +192,179 @@ function renderTeam(root) {
             toast('Select the invite link and copy it');
         }
     };
+    $('#copyMemberReset').onclick = () => copyLink('#memberResetLink', 'Reset link copied');
+    loadMembers();
 }
+
+async function copyLink(selector, doneMessage) {
+    const input = $(selector);
+    try {
+        await navigator.clipboard.writeText(input.value);
+        toast(doneMessage);
+    } catch {
+        input.focus();
+        input.select();
+        input.setSelectionRange(0, input.value.length);
+        toast('Select the link and copy it');
+    }
+}
+
+async function loadMembers() {
+    const list = $('#memberList');
+    if (!list) return;
+    try {
+        const members = await api('/users');
+        list.replaceChildren(...members.map(memberRow));
+        $('#memberError').textContent = '';
+    } catch (error) {
+        $('#memberError').textContent = error.message;
+    }
+}
+
+function memberButton(label, onClick, disabled = false) {
+    const button = document.createElement('button');
+    button.className = 'btn';
+    button.type = 'button';
+    button.textContent = label;
+    button.disabled = disabled;
+    button.onclick = onClick;
+    return button;
+}
+
+function memberRow(member) {
+    const self = member.id === user?.id;
+    const disabled = Boolean(member.disabled_at);
+    const row = document.createElement('div');
+    row.style.cssText = 'display:grid;gap:6px;padding:10px 0;border-top:1px solid var(--line)';
+    const name = document.createElement('div');
+    name.textContent = member.email + (self ? ' (you)' : '');
+    const status = document.createElement('div');
+    status.className = 'assetmeta';
+    status.textContent = `${member.role === 'admin' ? 'Administrator' : 'Viewer'} · ${disabled ? 'Disabled' : 'Active'}`;
+    const role = document.createElement('select');
+    role.setAttribute('aria-label', `Role for ${member.email}`);
+    role.disabled = self;
+    for (const [value, label] of [['viewer', 'Viewer'], ['admin', 'Administrator']]) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        role.append(option);
+    }
+    role.value = member.role;
+    role.onchange = () => changeMember(member.id, {role: role.value}, `Role updated for ${member.email}`);
+    const controls = document.createElement('div');
+    controls.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;align-items:center';
+    controls.append(
+        role,
+        memberButton(disabled ? 'Enable' : 'Disable', () => changeMember(member.id, {disabled: !disabled},
+            disabled ? `${member.email} can sign in again` : `${member.email} is disabled and signed out`), self),
+        memberButton('Reset password', () => issueMemberReset(member), self || disabled),
+        memberButton('Sign out everywhere', () => revokeMemberSessions(member))
+    );
+    row.append(name, status, controls);
+    return row;
+}
+
+async function changeMember(id, body, message) {
+    try {
+        await api(`/users/${id}`, {method: 'PATCH', body: JSON.stringify(body)});
+        toast(message);
+    } catch (error) {
+        $('#memberError').textContent = error.message;
+    }
+    await loadMembers();
+}
+
+async function issueMemberReset(member) {
+    $('#memberError').textContent = '';
+    try {
+        const result = await api(`/users/${member.id}/password-reset`, {method: 'POST'});
+        const link = new URL(location.href);
+        link.hash = new URLSearchParams({reset: result.reset_token}).toString();
+        $('#memberResetLink').value = link.toString();
+        $('#memberResetMessage').textContent = `Reset link for ${result.email} expires ${new Date(result.expires_at).toLocaleString()}. Issuing another one replaces it.`;
+        $('#memberResetResult').hidden = false;
+    } catch (error) {
+        $('#memberError').textContent = error.message;
+    }
+}
+
+async function revokeMemberSessions(member) {
+    $('#memberError').textContent = '';
+    try {
+        const result = await api(`/users/${member.id}/sessions/revoke`, {method: 'POST'});
+        toast(`Signed out ${result.revoked_sessions} session(s) for ${member.email}`);
+    } catch (error) {
+        $('#memberError').textContent = error.message;
+    }
+}
+
+const openPasswordChange = () => {
+    $('#modalTitle').textContent = 'Change your password';
+    $('#modalSub').textContent = 'Changing your password signs you out everywhere. Sign in again with the new password.';
+    $('#modalFields').innerHTML = `<label class="field">Current password<input id="pwCurrent" type="password" autocomplete="current-password" maxlength="1024"></label>
+        <label class="field">New password (at least 14 characters)<input id="pwNew" type="password" minlength="14" maxlength="1024" autocomplete="new-password"></label>
+        <label class="field">Confirm new password<input id="pwConfirm" type="password" minlength="14" maxlength="1024" autocomplete="new-password"></label>
+        <p id="pwError" class="error" role="alert"></p>`;
+    $('#modalSave').textContent = 'Change password';
+    $('#modalSave').onclick = async () => {
+        const feedback = $('#pwError');
+        feedback.textContent = '';
+        if ($('#pwNew').value !== $('#pwConfirm').value) { feedback.textContent = 'The new passwords do not match.'; return; }
+        const save = $('#modalSave');
+        save.disabled = true;
+        try {
+            await api('/me/password', {method: 'POST', body: JSON.stringify({current_password: $('#pwCurrent').value, new_password: $('#pwNew').value})});
+            closeModal();
+            toast('Password changed. Sign in with the new password.');
+            logout();
+        } catch (error) {
+            feedback.textContent = error.message;
+        } finally {
+            save.disabled = false;
+        }
+    };
+    $('#modalback').style.display = 'grid';
+    $('#pwCurrent').focus();
+};
+document.querySelectorAll('.pw-change').forEach(button => { button.onclick = openPasswordChange; });
+
+const resetToken = new URLSearchParams(location.hash.slice(1)).get('reset');
+function configureReset() {
+    if (!resetToken) return;
+    $('#signInPanel').hidden = true;
+    $('#inviteAcceptance').hidden = true;
+    $('#resetAcceptance').hidden = false;
+}
+configureReset();
+$('#resetAcceptance').addEventListener('submit', async event => {
+    event.preventDefault();
+    if ($('#resetPassword').value !== $('#resetPasswordConfirm').value) {
+        $('#resetError').textContent = 'Passwords do not match.';
+        return;
+    }
+    try {
+        const response = await fetch(API+'/auth/password-reset/accept', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({token: resetToken, password: $('#resetPassword').value})
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.detail || 'Could not set the new password');
+        history.replaceState(null, '', location.pathname + location.search);
+        $('#resetError').textContent = '';
+        $('#resetAcceptance').hidden = true;
+        $('#signInPanel').hidden = false;
+        toast('Password updated. Sign in with it.');
+    } catch (error) {
+        $('#resetError').textContent = error.message;
+    }
+});
+$('#resetBack').onclick = () => {
+    history.replaceState(null, '', location.pathname + location.search);
+    $('#resetAcceptance').hidden = true;
+    $('#signInPanel').hidden = false;
+};
 
 function renderSidebar(){let counts={moving:0,stopped:0,offline:0};assets.forEach(a=>counts[a.status]++);$('#movingCount').textContent=counts.moving;$('#stoppedCount').textContent=counts.stopped;$('#offlineCount').textContent=counts.offline;let root=$('#items');if(view==='team'){if(!root.querySelector('#teamPanel'))renderTeam(root);return}if(view==='safety'){if(!root.querySelector('#safetyPanel'))renderSafety(root);return}if(view==='dispatch'){renderDispatch(root);return}if(view==='stations'){renderStations(root);return}if(view==='history'&&root.querySelector('#tripForm'))return;if(view==='assets'){let q=$('#search').value.toLowerCase();let list=assets.filter(a=>a.name.toLowerCase().includes(q));root.innerHTML=list.map(a=>`<div class="asset ${a.id===selectedAsset?'sel':''}" data-id="${a.id}"><i class="assetdot ${a.status}"></i><div class="assetinfo"><div class="assetname">${esc(a.name)}</div><div class="assetmeta">${esc(a.kind)} · ${a.recorded_at?new Date(a.recorded_at).toLocaleTimeString():'No GPS fix'}</div></div><span class="speed">${a.speed?Math.round(a.speed)+' km/h':''}</span></div>`).join('')||'<div class="empty">No assets match your search.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{selectedAsset=+el.dataset.id;let a=assets.find(x=>x.id===selectedAsset);if(a?.lat)map.flyTo({center:[a.lng,a.lat],zoom:14});renderSidebar()});return}if(view==='observations'){root.innerHTML=observations.map(o=>`<div class="asset" data-id="${o.id}"><i class="assetdot" style="background:#70a7ff"></i><div class="assetinfo"><div class="assetname">${esc(o.note||(o.kind==='mobile_dot_checkpoint'?'Temporary inspection checkpoint':'Observation pin'))}</div><div class="assetmeta">${esc(o.author)} · ${new Date(o.observed_at).toLocaleString()}</div></div></div>`).join('')||'<div class="empty">No observations yet. Right-click the map to add one.</div>';root.querySelectorAll('.asset').forEach(el=>el.onclick=()=>{let o=observations.find(x=>x.id==el.dataset.id);map.flyTo({center:[o.lng,o.lat],zoom:15})});return}if(view==='alerts'){renderAlerts(root);return}root.innerHTML='<div class="empty">Select an asset to browse up to 30 days of trip history.</div>'}
 function pendingObservationQueue(){try{let value=JSON.parse(localStorage.getItem('dt_pending_observations')||'[]');if(!Array.isArray(value))return [];return value.filter(o=>o&&typeof o.client_id==='string'&&typeof o.note==='string'&&Number.isFinite(o.lat)&&o.lat>=-90&&o.lat<=90&&Number.isFinite(o.lng)&&o.lng>=-180&&o.lng<=180&&Number.isInteger(o.user_id)&&Number.isInteger(o.org_id)).slice(0,1000)}catch{return []}}
@@ -284,7 +467,7 @@ function openObservation(point){
     observationCapturedAt = new Date().toISOString();
     $('#modalSave').onclick = saveObservation;
     $('#modalSave').textContent = 'Save';
-    $('#modalTitle').textContent='Drop an observation';$('#modalSub').textContent=`${point[1].toFixed(5)}, ${point[0].toFixed(5)} · ${new Date(observationCapturedAt).toLocaleString()}`;$('#modalFields').innerHTML=`<label class="field">Pin type<select id="obsKind"><option value="observation">Observation</option><option value="mobile_dot_checkpoint">Temporary inspection checkpoint (2 hours)</option>${user.role==='admin'?'<option value="inspection_site">Non-permanent safety inspection station</option>':''}</select></label><label class="field">Note<textarea id="obsNote" maxlength="2000" placeholder="What did you observe?"></textarea></label><label class="field">Related asset (optional)<select id="obsAsset"><option value="">No asset linked</option>${assets.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></label>`;$('#modalback').style.display='grid';$('#obsKind').onchange=e=>{if(e.target.value==='inspection_site')openInspectionSite(point)};setTimeout(()=>$('#obsNote')?.focus(),50)}function closeModal(){$('#modalback').style.display='none'}$('#modalClose').onclick=$('#modalCancel').onclick=closeModal;$('#modalSave').onclick=async()=>{let item={client_id:crypto.randomUUID(),lat:pendingPoint[1],lng:pendingPoint[0],note:$('#obsNote').value,kind:$('#obsKind').value,asset_id:$('#obsAsset').value?+$('#obsAsset').value:null,observed_at:observationCapturedAt,user_id:user.id,org_id:user.org_id};
+    $('#modalTitle').textContent='Drop an observation';$('#modalSub').textContent=`${point[1].toFixed(5)}, ${point[0].toFixed(5)} · ${new Date(observationCapturedAt).toLocaleString()}`;$('#modalFields').innerHTML=`<label class="field">Pin type<select id="obsKind"><option value="observation">Observation</option><option value="mobile_dot_checkpoint">Temporary inspection checkpoint (2 hours)</option>${user.role==='admin'?'<option value="inspection_site">Non-permanent safety inspection station</option>':''}</select></label><label class="field">Note<textarea id="obsNote" maxlength="2000" placeholder="What did you observe?"></textarea></label><label class="field">Related asset (optional)<select id="obsAsset"><option value="">No asset linked</option>${assets.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select></label>`;$('#modalback').style.display='grid';$('#obsKind').onchange=e=>{if(e.target.value==='inspection_site')openInspectionSite(point)};setTimeout(()=>$('#obsNote')?.focus(),50)}function closeModal(){$('#modalback').style.display='none';$('#modalSave').textContent='Save'}$('#modalClose').onclick=$('#modalCancel').onclick=closeModal;$('#modalSave').onclick=async()=>{let item={client_id:crypto.randomUUID(),lat:pendingPoint[1],lng:pendingPoint[0],note:$('#obsNote').value,kind:$('#obsKind').value,asset_id:$('#obsAsset').value?+$('#obsAsset').value:null,observed_at:observationCapturedAt,user_id:user.id,org_id:user.org_id};
 if(item.kind==='mobile_dot_checkpoint'){
     try{
         const queue=pendingObservationQueue();
