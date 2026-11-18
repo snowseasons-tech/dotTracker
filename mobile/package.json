@@ -14,7 +14,7 @@
     "react-native-safe-area-context": "~5.11.1"
   },
   "devDependencies": {
-    "@types/node": "^20.19.43",
+    "@types/node": "^26.6.6",
     "@types/react": "~19.3.0",
     "tsx": "4.23.15",
     "typescript": "~6.0.3"
