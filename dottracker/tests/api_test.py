@@ -910,3 +910,49 @@ def test_observation_coordinates_are_bounded_by_the_database(client):
     with pytest.raises(psycopg.errors.CheckViolation):
         with psycopg.connect(os.environ['DATABASE_URL']) as conn:
             conn.execute('INSERT INTO observations(org_id,author_id,lat,lng,observed_at) VALUES(%s,%s,95,0,now())', (org_id, author_id))
+
+
+def test_tracker_credentials_are_admin_managed_org_scoped_and_rotation_revokes_the_old_one(client):
+    admin_headers = login(client)
+    org_id = client.get('/api/me', headers=admin_headers).json()['org_id']
+    viewer = add_user(org_id, 'tracker-viewer', 'viewer', 'tracker-viewer-password')
+    viewer_headers = login(client, viewer, 'tracker-viewer-password')
+    asset = client.post('/api/assets', headers=admin_headers, json={'name': f'Tracker asset {RUN}'}).json()
+    asset_path = f"/api/assets/{asset['id']}"
+    device_id = f'tracker-{RUN}'
+
+    # Tracker IDs are visible to administrators only.
+    assert {row['id']: row for row in client.get('/api/assets', headers=admin_headers).json()}[asset['id']]['device_id'] is None
+    assert all(row['device_id'] is None for row in client.get('/api/assets', headers=viewer_headers).json())
+
+    # Viewers cannot attach or rotate; rotating before a tracker exists is refused.
+    assert client.post(f'{asset_path}/device?device_id={device_id}', headers=viewer_headers).status_code == 403
+    assert client.post(f'{asset_path}/device/rotate', headers=viewer_headers).status_code == 403
+    assert client.post(f'{asset_path}/device/rotate', headers=admin_headers).status_code == 404
+
+    attached = client.post(f'{asset_path}/device?device_id={device_id}', headers=admin_headers)
+    assert attached.status_code == 200 and attached.json()['device_token']
+    first = attached.json()['device_token']
+    assert client.post(f'{asset_path}/device?device_id=other-{RUN}', headers=admin_headers).status_code == 409
+    other_asset = client.post('/api/assets', headers=admin_headers, json={'name': f'Tracker other {RUN}'}).json()
+    assert client.post(f"/api/assets/{other_asset['id']}/device?device_id={device_id}", headers=admin_headers).status_code == 409
+    assert {row['id']: row for row in client.get('/api/assets', headers=admin_headers).json()}[asset['id']]['device_id'] == device_id
+
+    def fix(token, seconds_ago):
+        return {'device_id': device_id, 'token': token, 'lat': 39.7, 'lng': -105.0, 'speed': 1,
+                'recorded_at': (datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)).isoformat()}
+
+    assert client.post('/api/ingest', json=fix(first, 5)).status_code == 200
+    rotated = client.post(f'{asset_path}/device/rotate', headers=admin_headers)
+    assert rotated.status_code == 200 and rotated.json()['device_token'] != first
+    second = rotated.json()['device_token']
+    assert client.post('/api/ingest', json=fix(first, 4)).status_code == 401
+    assert client.post('/api/ingest', json=fix(second, 3)).status_code == 200
+
+    # Another workspace cannot see, attach to, or rotate this asset's tracker.
+    org_b = create_workspace(f'Tracker scope {RUN}')
+    b_admin = add_user(org_b, 'tracker-b-admin', 'admin', 'tracker-b-admin-password')
+    b_headers = login(client, b_admin, 'tracker-b-admin-password')
+    assert client.post(f'{asset_path}/device/rotate', headers=b_headers).status_code == 404
+    assert client.post(f'{asset_path}/device?device_id=b-{RUN}', headers=b_headers).status_code == 404
+    assert all(row['id'] != asset['id'] for row in client.get('/api/assets', headers=b_headers).json())

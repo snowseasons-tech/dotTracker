@@ -133,6 +133,15 @@ Admins cannot disable their own account or remove their own administrator role. 
 
 A signed-out session keeps its current access token until the token expires (`ACCESS_TOKEN_MINUTES`, 30 by default). Disabling is different: it takes effect on the next request.
 
+## Manage trackers
+
+Workspace admins open **Team**, then **Trackers**. Each asset shows its tracker ID, or **No tracker attached**.
+
+- **Attach tracker** gives an asset without one a tracker ID. The credential is shown once, so copy it into the tracker's configuration.
+- **Rotate credential** asks for confirmation, then issues a new credential. The old one stops working at once, and the tracker stops sharing until it has the new credential.
+
+Viewers do not see tracker IDs. The asset list returns `device_id` to administrators only.
+
 ## Production deployment path
 
 Use the step-by-step [production development and release workflow](PRODUCTION_WORKFLOW.md) for database setup, migration, TLS ingress, staging acceptance, backup restore, release, and rollback.

@@ -372,10 +372,11 @@ def change_password(body:PasswordChange,c=Depends(db),u=Depends(current_user)):
 
 @app.get('/api/assets')
 def assets(c=Depends(db),u=Depends(current_user)):
-    rows=c.execute('''SELECT a.id,a.name,a.kind,p.lat,p.lng,p.speed,p.heading,p.recorded_at,
+    # The tracker ID is shown to administrators only; viewers get null.
+    rows=c.execute('''SELECT a.id,a.name,a.kind,CASE WHEN %s THEN a.device_id END AS device_id,p.lat,p.lng,p.speed,p.heading,p.recorded_at,
       CASE WHEN p.recorded_at IS NULL OR p.recorded_at < now()-interval '60 seconds' THEN 'offline' WHEN p.speed > 2 THEN 'moving' ELSE 'stopped' END status
       FROM assets a LEFT JOIN LATERAL (SELECT * FROM positions WHERE asset_id=a.id AND org_id=a.org_id ORDER BY recorded_at DESC LIMIT 1) p ON true
-      WHERE a.org_id=%s ORDER BY a.name''',(u['org_id'],)).fetchall()
+      WHERE a.org_id=%s ORDER BY a.name''',(u['role']=='admin',u['org_id'])).fetchall()
     return rows
 @app.post('/api/assets')
 def add_asset(body:AssetIn,c=Depends(db),u=Depends(admin)):
