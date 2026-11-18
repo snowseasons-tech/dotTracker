@@ -1,10 +1,11 @@
 # dotTracker mobile
 
 iPhone/Android app that shares a vehicle's location with the existing dotTracker API, including
-while the app is closed. It replaces the foreground-only web "Phone tracker" page for drivers.
+while the app is closed. The web dashboard does not share a phone's location.
 
 It sends fixes to the existing `POST /api/ingest` endpoint with the tracker ID and credential an admin
-creates under **Phone tracker** in the dashboard. No backend changes are needed.
+creates in the dashboard: **+ Asset**, then enter a name and a tracker ID. The credential is shown once,
+so save it. No backend changes are needed.
 
 ## How it behaves
 - Starts and stops only when the driver taps the button; stop asks for confirmation.
