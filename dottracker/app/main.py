@@ -17,6 +17,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError, VerificationError
 from pydantic import BaseModel, ConfigDict, Field
 from app.geometry import inside
+from app.rate_limit import SlidingWindowLimiter
 from app.routing import RoutePlan, RouteRequest, sort_route
 
 APP_ENV=os.getenv('APP_ENV','development').lower()
@@ -27,6 +28,23 @@ DEVICE_TOKEN=os.getenv('DEVICE_TOKEN','demo-device-token')
 ACCESS_MINUTES=int(os.getenv('ACCESS_TOKEN_MINUTES','30'))
 if not 1<=ACCESS_MINUTES<=60:
     raise RuntimeError('ACCESS_TOKEN_MINUTES must be between 1 and 60')
+INGEST_LIMIT_PER_MINUTE=int(os.getenv('INGEST_LIMIT_PER_MINUTE','120'))
+if not 1<=INGEST_LIMIT_PER_MINUTE<=10000:
+    raise RuntimeError('INGEST_LIMIT_PER_MINUTE must be between 1 and 10000')
+ingest_limiter=SlidingWindowLimiter(INGEST_LIMIT_PER_MINUTE,60)
+
+def validated_forwarded_allow_ips(value):
+    """Proxy addresses whose X-Forwarded-For and X-Forwarded-Proto headers the API believes.
+
+    The container command passes this value to uvicorn. Trusting '*' lets any client choose its
+    own address, which defeats the per-address sign-in throttle, so it is refused, and so is an
+    empty value. Refusing it here stops the process when the module is imported.
+    """
+    entries=[part.strip() for part in value.split(',') if part.strip()]
+    if not entries: raise RuntimeError('FORWARDED_ALLOW_IPS must name the proxy address, for example 172.17.0.1')
+    if '*' in entries: raise RuntimeError("FORWARDED_ALLOW_IPS must not be '*'; name the proxy address")
+    return ','.join(entries)
+FORWARDED_ALLOW_IPS=validated_forwarded_allow_ips(os.getenv('FORWARDED_ALLOW_IPS','127.0.0.1'))
 pwd=PasswordHasher()
 DUMMY_PASSWORD_HASH=pwd.hash('timing-equalization-value-not-a-real-account')
 
@@ -42,6 +60,7 @@ SUPPORTED_SCHEMA_VERSIONS=frozenset({
     '0010-inspection-sites',
     '0011-alert-reads',
     '0012-function-search-path',
+    '0013-account-management',
 })
 
 # Base map: OpenFreeMap by default, any HTTPS style (e.g. a self-hosted tile server),
@@ -146,7 +165,7 @@ def current_user(authorization: str=Header(default=''), c=Depends(db)):
     except jwt.PyJWTError: raise HTTPException(401,'Session expired; sign in again')
     try: subject=int(p['sub']); org_id=int(p['org'])
     except (KeyError,TypeError,ValueError): raise HTTPException(401,'Invalid session')
-    u=c.execute('SELECT id,org_id,email,role FROM users WHERE id=%s AND org_id=%s',(subject,org_id)).fetchone()
+    u=c.execute('SELECT id,org_id,email,role FROM users WHERE id=%s AND org_id=%s AND disabled_at IS NULL',(subject,org_id)).fetchone()
     if not u: raise HTTPException(401,'Invalid session')
     return u
 
@@ -163,6 +182,9 @@ class PositionIn(StrictModel): device_id:str=Field(min_length=1,max_length=120);
 class InviteIn(StrictModel): email:str=Field(min_length=3,max_length=320); role:str=Field(default='viewer',pattern='^(admin|viewer)$')
 class InviteAccept(StrictModel): token:str=Field(min_length=32,max_length=128); password:str=Field(min_length=14,max_length=1024)
 class RefreshIn(StrictModel): refresh_token:str=Field(min_length=32,max_length=128)
+class UserUpdate(StrictModel): role:Optional[Literal['admin','viewer']]=None; disabled:Optional[bool]=None
+class PasswordChange(StrictModel): current_password:str=Field(min_length=1,max_length=1024); new_password:str=Field(min_length=14,max_length=1024)
+class PasswordResetAccept(StrictModel): token:str=Field(min_length=32,max_length=128); password:str=Field(min_length=14,max_length=1024)
 
 def issue_session(c,user):
     refresh=secrets.token_urlsafe(48)
@@ -187,7 +209,7 @@ def login(body:Login,request:Request,c=Depends(db)):
     limit=c.execute('SELECT failures,blocked_until FROM login_attempts WHERE throttle_key=%s',(throttle_key,)).fetchone()
     if limit and limit['blocked_until'] and limit['blocked_until']>datetime.now(timezone.utc):
         raise HTTPException(429,'Too many sign-in attempts. Try again later.',headers={'Retry-After':'900'})
-    u=c.execute('SELECT id,org_id,email,role,password_hash FROM users WHERE lower(email)=lower(%s)',(normalized,)).fetchone()
+    u=c.execute('SELECT id,org_id,email,role,password_hash,disabled_at FROM users WHERE lower(email)=lower(%s)',(normalized,)).fetchone()
     valid=False
     if u:
         try: valid=pwd.verify(u['password_hash'],body.password)
@@ -195,6 +217,7 @@ def login(body:Login,request:Request,c=Depends(db)):
     else:
         try: pwd.verify(DUMMY_PASSWORD_HASH,body.password)
         except VerifyMismatchError: pass
+    if u and u['disabled_at'] is not None: valid=False  # a disabled account gets the same answer as a wrong password
     if not valid:
         c.execute('''INSERT INTO login_attempts(throttle_key,failures,blocked_until,updated_at)
           VALUES(%s,1,NULL,now()) ON CONFLICT(throttle_key) DO UPDATE SET
@@ -244,7 +267,7 @@ def refresh_session(body:RefreshIn,c=Depends(db)):
     digest=hashlib.sha256(body.refresh_token.encode()).hexdigest()
     old=c.execute('DELETE FROM user_sessions WHERE session_hash=%s AND expires_at>now() RETURNING user_id,org_id',(digest,)).fetchone()
     if not old: raise HTTPException(401,'Refresh session is expired or already used')
-    user=c.execute('SELECT id,org_id,email,role FROM users WHERE id=%s AND org_id=%s',(old['user_id'],old['org_id'])).fetchone()
+    user=c.execute('SELECT id,org_id,email,role FROM users WHERE id=%s AND org_id=%s AND disabled_at IS NULL',(old['user_id'],old['org_id'])).fetchone()
     if not user:
         c.rollback(); raise HTTPException(401,'Account is no longer active')
     tokens=issue_session(c,user)
@@ -257,6 +280,94 @@ def logout_session(body:RefreshIn,c=Depends(db)):
     c.execute('DELETE FROM user_sessions WHERE session_hash=%s',(digest,))
     c.commit()
     return {'revoked':True}
+
+@app.get('/api/users')
+def list_users(c=Depends(db),u=Depends(admin)):
+    return c.execute('SELECT id,email,role,disabled_at,created_at FROM users WHERE org_id=%s ORDER BY email',(u['org_id'],)).fetchall()
+
+@app.patch('/api/users/{user_id}')
+def update_user(body:UserUpdate,user_id:int=ApiPath(gt=0),c=Depends(db),u=Depends(admin)):
+    if body.role is None and body.disabled is None: raise HTTPException(422,'Send role, disabled, or both')
+    # The acting administrator is always an active administrator, so refusing to change their own
+    # role or account keeps at least one active administrator in the workspace.
+    if user_id==u['id'] and (body.disabled or (body.role is not None and body.role!='admin')):
+        raise HTTPException(409,'You cannot disable your own account or remove your own administrator role')
+    target=c.execute('SELECT id,role,disabled_at FROM users WHERE id=%s AND org_id=%s',(user_id,u['org_id'])).fetchone()
+    if not target: raise HTTPException(404,'User not found')
+    role=body.role or target['role']
+    if body.disabled is None: disabled_at=target['disabled_at']
+    elif body.disabled: disabled_at=target['disabled_at'] or datetime.now(timezone.utc)
+    else: disabled_at=None
+    row=c.execute('UPDATE users SET role=%s,disabled_at=%s WHERE id=%s AND org_id=%s RETURNING id,email,role,disabled_at,created_at',
+                  (role,disabled_at,user_id,u['org_id'])).fetchone()
+    if disabled_at is not None:
+        c.execute('DELETE FROM user_sessions WHERE user_id=%s AND org_id=%s',(user_id,u['org_id']))
+    c.commit()
+    return row
+
+@app.post('/api/users/{user_id}/sessions/revoke')
+def revoke_user_sessions(user_id:int=ApiPath(gt=0),c=Depends(db),u=Depends(admin)):
+    if not c.execute('SELECT 1 FROM users WHERE id=%s AND org_id=%s',(user_id,u['org_id'])).fetchone():
+        raise HTTPException(404,'User not found')
+    removed=c.execute('DELETE FROM user_sessions WHERE user_id=%s AND org_id=%s',(user_id,u['org_id'])).rowcount
+    c.commit()
+    return {'revoked_sessions':removed}
+
+@app.post('/api/users/{user_id}/password-reset',status_code=201)
+def issue_password_reset(user_id:int=ApiPath(gt=0),c=Depends(db),u=Depends(admin)):
+    if user_id==u['id']: raise HTTPException(409,'Use Change password to set your own password')
+    target=c.execute('SELECT email,disabled_at FROM users WHERE id=%s AND org_id=%s',(user_id,u['org_id'])).fetchone()
+    if not target: raise HTTPException(404,'User not found')
+    if target['disabled_at'] is not None: raise HTTPException(409,'Enable the account before issuing a password reset')
+    raw=secrets.token_urlsafe(32)
+    digest=hashlib.sha256(raw.encode()).hexdigest()
+    # A newer link replaces any unused link for the same person.
+    c.execute('UPDATE password_resets SET used_at=now() WHERE user_id=%s AND org_id=%s AND used_at IS NULL',(user_id,u['org_id']))
+    expires=c.execute("""INSERT INTO password_resets(org_id,user_id,token_hash,requested_by,expires_at)
+      VALUES(%s,%s,%s,%s,now()+interval '48 hours') RETURNING expires_at""",(u['org_id'],user_id,digest,u['id'])).fetchone()['expires_at']
+    c.commit()
+    return {'email':target['email'],'expires_at':expires,'reset_token':raw,
+            'delivery':'Copy this token and send it to the user through a trusted channel. It works once and expires in 48 hours.'}
+
+@app.post('/api/auth/password-reset/accept')
+def accept_password_reset(body:PasswordResetAccept,c=Depends(db)):
+    digest=hashlib.sha256(body.token.encode()).hexdigest()
+    reset=c.execute("""SELECT r.id,r.user_id,r.org_id FROM password_resets r
+      JOIN users u ON u.id=r.user_id AND u.org_id=r.org_id
+      WHERE r.token_hash=%s AND r.used_at IS NULL AND r.expires_at>now() AND u.disabled_at IS NULL
+      FOR UPDATE OF r""",(digest,)).fetchone()
+    if not reset: raise HTTPException(400,'Reset link is invalid, expired, or already used')
+    c.execute('UPDATE users SET password_hash=%s WHERE id=%s AND org_id=%s',(pwd.hash(body.password),reset['user_id'],reset['org_id']))
+    c.execute('UPDATE password_resets SET used_at=now() WHERE id=%s',(reset['id'],))
+    c.execute('DELETE FROM user_sessions WHERE user_id=%s AND org_id=%s',(reset['user_id'],reset['org_id']))
+    c.commit()
+    return {'password_updated':True}
+
+@app.post('/api/me/password')
+def change_password(body:PasswordChange,c=Depends(db),u=Depends(current_user)):
+    # Wrong current passwords get the same five-strike, 15-minute throttle as sign-in, so a stolen session
+    # cannot guess the current password without limit.
+    throttle_key=hashlib.sha256(f"password-change|{u['id']}".encode()).hexdigest()
+    limit=c.execute('SELECT failures,blocked_until FROM login_attempts WHERE throttle_key=%s',(throttle_key,)).fetchone()
+    if limit and limit['blocked_until'] and limit['blocked_until']>datetime.now(timezone.utc):
+        raise HTTPException(429,'Too many attempts. Try again later.',headers={'Retry-After':'900'})
+    row=c.execute('SELECT password_hash FROM users WHERE id=%s AND org_id=%s',(u['id'],u['org_id'])).fetchone()
+    try: valid=pwd.verify(row['password_hash'],body.current_password)
+    except (VerifyMismatchError,VerificationError): valid=False
+    if not valid:
+        c.execute('''INSERT INTO login_attempts(throttle_key,failures,blocked_until,updated_at)
+          VALUES(%s,1,NULL,now()) ON CONFLICT(throttle_key) DO UPDATE SET
+          failures=CASE WHEN login_attempts.updated_at < now()-interval '15 minutes' THEN 1 ELSE login_attempts.failures+1 END,
+          blocked_until=CASE WHEN (CASE WHEN login_attempts.updated_at < now()-interval '15 minutes' THEN 1 ELSE login_attempts.failures+1 END)>=5 THEN now()+interval '15 minutes' ELSE NULL END,
+          updated_at=now()''',(throttle_key,))
+        c.commit()
+        # 400, not 401: a 401 makes the browser try to renew the session.
+        raise HTTPException(400,'Current password is incorrect')
+    c.execute('DELETE FROM login_attempts WHERE throttle_key=%s',(throttle_key,))
+    c.execute('UPDATE users SET password_hash=%s WHERE id=%s AND org_id=%s',(pwd.hash(body.new_password),u['id'],u['org_id']))
+    c.execute('DELETE FROM user_sessions WHERE user_id=%s AND org_id=%s',(u['id'],u['org_id']))
+    c.commit()
+    return {'password_updated':True,'signed_out':True}
 
 @app.get('/api/assets')
 def assets(c=Depends(db),u=Depends(current_user)):
@@ -747,6 +858,9 @@ def live_ticket(c=Depends(db),u=Depends(current_user)):
 
 @app.post('/api/ingest')
 def ingest(b:PositionIn,background_tasks:BackgroundTasks,c=Depends(db)):
+    # Counts every attempt, including wrong tokens, so guessing a token is slowed too.
+    allowed,retry_after=ingest_limiter.allow(hashlib.sha256(b.device_id.encode()).hexdigest())
+    if not allowed: raise HTTPException(429,'Too many fixes for this tracker; slow down',headers={'Retry-After':str(retry_after)})
     d=c.execute('SELECT d.org_id,d.asset_id FROM devices d JOIN assets a ON a.id=d.asset_id AND a.org_id=d.org_id WHERE a.device_id=%s AND d.enabled=true',(b.device_id,)).fetchone()
     if not d: raise HTTPException(404,'Device not registered')
     stored=c.execute('SELECT device_token_hash FROM devices WHERE asset_id=%s AND org_id=%s',(d['asset_id'],d['org_id'])).fetchone()

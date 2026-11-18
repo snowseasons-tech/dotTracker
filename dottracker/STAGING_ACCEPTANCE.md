@@ -64,7 +64,7 @@ docker compose -f docker-compose.production.yml --profile migration run --rm mig
 | ID | Check | Pass criteria |
 |---|---|---|
 | M1 | Migration runner completes | Exit 0. Output lists each pending version once, or "already applied" for each. |
-| M2 | Schema versions recorded | `psql "$MIGRATION_DATABASE_URL" -c "SELECT version FROM schema_migrations ORDER BY version"` returns `0002-hardened-mvp` through `0012-function-search-path`, and `SELECT name, row_count FROM cdot_datasets` lists milepoints 9006, patrols 579 and stations 16 |
+| M2 | Schema versions recorded | `psql "$MIGRATION_DATABASE_URL" -c "SELECT version FROM schema_migrations ORDER BY version"` returns `0002-hardened-mvp` through `0013-account-management`, and `SELECT name, row_count FROM cdot_datasets` lists milepoints 9006, patrols 579 and stations 16 |
 | M3 | Migrator cannot run inside the API container | `docker compose -f docker-compose.production.yml exec api env \| grep -c MIGRATION_DATABASE_URL` returns `0` |
 | M4 | Runtime role has no DDL | `psql "$STAGING_HOST_DB_URL" -c "CREATE TABLE zz_probe(id int)"` fails with permission denied |
 
@@ -96,7 +96,7 @@ docker compose -f docker-compose.production.yml up -d api
 | H1 | Liveness through private ingress | `curl -sS "$STAGING_URL/health/live"` | `{"status":"ok"}` over HTTPS |
 | H2 | Readiness requires the database | `curl -sS "$STAGING_URL/health"` | `{"status":"ok"}` |
 | H3 | Readiness fails when the database is down | Stop the database briefly (staging only) then `curl -sS -o /dev/null -w '%{http_code}' "$STAGING_URL/health"` | Non-200 while the database is down, 200 after it recovers |
-| H4 | Schema gate refuses to start | Start the API against a database missing `0012-function-search-path` in a throwaway copy | Container exits; logs name the missing version |
+| H4 | Schema gate refuses to start | Start the API against a database missing `0013-account-management` in a throwaway copy | Container exits; logs name the missing version |
 | H5 | Demo seeding disabled | `curl -sS -X POST "$STAGING_URL/api/dev/seed" -o /dev/null -w '%{http_code}'` | 404 or 403, never 2xx |
 | H6 | Interactive API docs disabled | `curl -sS -o /dev/null -w '%{http_code}' "$STAGING_URL/docs"` | Not 200 |
 | H7 | Container hardening | `docker inspect` for the API container | `ReadonlyRootfs: true`, `CapDrop` includes `ALL`, `User` is `10001` |
@@ -152,6 +152,7 @@ AUTH="Authorization: Bearer $ACCEPT_TOKEN"
 | F18 | Logout and session revocation | `POST /api/auth/logout`, then reuse the refresh token | Refresh refused with `401` |
 | F19 | Tenant isolation | Create a second org with `create_org.py`; using its token, request the first org's asset, geofence, and observation IDs | `404` for every foreign ID; no data from the other org in any list |
 | F20 | Dispatch route save and reconnect | `PUT /api/assets/{id}/dispatch-route` as admin, then reconnect the browser | Saved route reloaded after `sync_ready` |
+| F21 | Account management | As admin, disable a viewer: the viewer's access token and sign-in fail. Re-enable, change the role to administrator and back, and sign the viewer out everywhere. Issue a reset link and set a new password with it; reuse of the link is refused | Each step behaves as described, with no access after disable and no reuse of a link |
 
 ## 8. Browser and failure-state checks
 
@@ -191,7 +192,7 @@ Copy this table into the release record and fill every row.
 | Migration output (M1–M4) | |
 | Backup ID and restore result (R1–R6) | |
 | Health and TLS results (H1–H7, T1–T6) | |
-| Functional results (F1–F20) | |
+| Functional results (F1–F21) | |
 | Browser results (U1–U7) | |
 | Observability results (O1–O5) | |
 | Failed or NOT RUN items, with owner and decision | |

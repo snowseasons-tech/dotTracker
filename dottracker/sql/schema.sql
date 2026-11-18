@@ -1,6 +1,6 @@
 CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE TABLE IF NOT EXISTS organizations (id BIGSERIAL PRIMARY KEY, name TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT now());
-CREATE TABLE IF NOT EXISTS users (id BIGSERIAL PRIMARY KEY, org_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('admin','viewer')), created_at TIMESTAMPTZ NOT NULL DEFAULT now(), UNIQUE(id,org_id));
+CREATE TABLE IF NOT EXISTS users (id BIGSERIAL PRIMARY KEY, org_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('admin','viewer')), created_at TIMESTAMPTZ NOT NULL DEFAULT now(), disabled_at TIMESTAMPTZ, UNIQUE(id,org_id));
 CREATE TABLE IF NOT EXISTS assets (id BIGSERIAL PRIMARY KEY, org_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, name TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'vehicle', device_id TEXT UNIQUE, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), UNIQUE(id,org_id));
 CREATE INDEX IF NOT EXISTS assets_org_idx ON assets(org_id);
 CREATE UNIQUE INDEX IF NOT EXISTS users_email_lower_idx ON users(lower(email));
@@ -192,3 +192,7 @@ INSERT INTO schema_migrations(version) VALUES('0011-alert-reads') ON CONFLICT DO
 -- the restored copy. Found in the v3.5.0 staging restore rehearsal.
 ALTER FUNCTION geofence_polygon(JSONB) SET search_path = public, pg_temp;
 INSERT INTO schema_migrations(version) VALUES('0012-function-search-path') ON CONFLICT DO NOTHING;
+-- dotTracker v3.7: account management (migration 0013), mirrored from sql/migrations/0013-account-management.sql.
+CREATE TABLE IF NOT EXISTS password_resets (id BIGSERIAL PRIMARY KEY, org_id BIGINT NOT NULL REFERENCES organizations(id) ON DELETE CASCADE, user_id BIGINT NOT NULL, token_hash TEXT NOT NULL UNIQUE, requested_by BIGINT NOT NULL, expires_at TIMESTAMPTZ NOT NULL, used_at TIMESTAMPTZ, created_at TIMESTAMPTZ NOT NULL DEFAULT now(), FOREIGN KEY(user_id,org_id) REFERENCES users(id,org_id) ON DELETE CASCADE, FOREIGN KEY(requested_by,org_id) REFERENCES users(id,org_id) ON DELETE CASCADE);
+CREATE INDEX IF NOT EXISTS password_resets_pending_idx ON password_resets (user_id) WHERE used_at IS NULL;
+INSERT INTO schema_migrations(version) VALUES('0013-account-management') ON CONFLICT DO NOTHING;

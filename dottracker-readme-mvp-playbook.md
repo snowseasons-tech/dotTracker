@@ -257,10 +257,10 @@ Manual annotations made on-site during a visual observation.
 
 The sections above are the original plan. This section records what the repository does today.
 
-**Built as planned:** live map with status-coloured markers and WebSocket updates; asset list with search; moving, stopped and offline status; 30-day trip history; circle and polygon geofences with in-app enter and exit alerts; observation pins with capture time and an offline queue; admin and viewer roles; invitation links; organization-scoped data with cross-tenant tests; one credential per tracker.
+**Built as planned:** live map with status-coloured markers and WebSocket updates; asset list with search; moving, stopped and offline status; 30-day trip history; circle and polygon geofences with in-app enter and exit alerts; observation pins with capture time and an offline queue; admin and viewer roles; invitation links; member management (role changes, disabling, sign-out everywhere, admin-issued password reset links); self-service password change; organization-scoped data with cross-tenant tests; one credential per tracker.
 
 **In scope but not built:**
-- Password reset, password change, removing a user, and changing a user's role.
+- Removing a user. Accounts are disabled instead, because observations keep their author.
 - Push notifications for alerts.
 - A per-asset alert toggle. Alerts are recorded per asset, but pausing applies to a whole geofence.
 - A map, asset list and observation pins in the mobile app. The Expo app only shares the phone's location.

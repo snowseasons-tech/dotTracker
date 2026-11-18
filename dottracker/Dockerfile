@@ -10,4 +10,6 @@ COPY --chown=10001:10001 sql ./sql
 COPY --chown=10001:10001 scripts ./scripts
 USER 10001:10001
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips", "127.0.0.1"]
+# FORWARDED_ALLOW_IPS names the proxy address the API should believe (default 127.0.0.1). It is read
+# here by the shell and validated in app/main.py, which refuses "*". Set it in .env.production.
+CMD ["sh", "-c", "exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-127.0.0.1}\""]

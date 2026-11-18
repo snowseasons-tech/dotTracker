@@ -1,6 +1,6 @@
 # dotTracker v3 · production-oriented MVP
 
-Development and release gates: see [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md) and the step-by-step [PRODUCTION_WORKFLOW.md](PRODUCTION_WORKFLOW.md). The API refuses to start unless all supported migrations through `0012-function-search-path` are applied.
+Development and release gates: see [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md) and the step-by-step [PRODUCTION_WORKFLOW.md](PRODUCTION_WORKFLOW.md). The API refuses to start unless all supported migrations through `0013-account-management` are applied.
 
 A pilot fleet-tracking application with a responsive MapLibre dashboard, FastAPI API, PostgreSQL/PostGIS schema, Argon2id password hashing, rotating opaque refresh sessions, org-scoped access, individual tracker credentials, short-lived one-use WebSocket tickets, duplicate-fix and observation idempotency, offline observation queueing, trip history, circle/polygon geofences, alerts, and observation pins.
 
@@ -120,11 +120,24 @@ Workspace admins can open **Team**, enter an email address, choose **Viewer** or
 
 The invited person opens the link, sets and confirms a password of at least 14 characters, and is signed in to the invited workspace. The invitation token stays in the URL fragment and is removed from the address bar after acceptance. An invalid, expired, or previously used link must be replaced by a workspace admin.
 
+## Manage team members
+
+Workspace admins open **Team**, then **Members**. From there an admin can:
+
+- change a member's role between Viewer and Administrator. The change applies to the member's next request;
+- **Disable** an account. It is signed out at once and cannot sign in or renew a session. **Enable** restores it;
+- **Sign out everywhere** to end all of a member's refresh sessions;
+- **Reset password** to issue a link that works once and expires in 48 hours. The member opens it, sets a password of at least 14 characters, and signs in again. Issuing a new link replaces an unused one.
+
+Admins cannot disable their own account or remove their own administrator role. Members change their own password with **Password** in the header, or in the sidebar on phones. That signs them out everywhere. Accounts are disabled rather than deleted, because observations keep their author.
+
+A signed-out session keeps its current access token until the token expires (`ACCESS_TOKEN_MINUTES`, 30 by default). Disabling is different: it takes effect on the next request.
+
 ## Production deployment path
 
 Use the step-by-step [production development and release workflow](PRODUCTION_WORKFLOW.md) for database setup, migration, TLS ingress, staging acceptance, backup restore, release, and rollback.
 
-The production Compose profile expects an operator-provisioned PostgreSQL 17 + PostGIS 3.5 database, a private TLS reverse proxy or managed edge, and separate least-privilege runtime and migration credentials. New databases receive `sql/schema.sql` once; supported existing databases are upgraded by `migrate.py`. The API refuses to start until migrations 0002 through 0012 are recorded.
+The production Compose profile expects an operator-provisioned PostgreSQL 17 + PostGIS 3.5 database, a private TLS reverse proxy or managed edge, and separate least-privilege runtime and migration credentials. New databases receive `sql/schema.sql` once; supported existing databases are upgraded by `migrate.py`. The API refuses to start until migrations 0002 through 0013 are recorded.
 
 Production hosting, database credentials, TLS ingress, monitoring, and a verified backup restore are not configured in this repository. dotTracker is not production-verified until the staging gates in the workflow have passed.
 
@@ -153,7 +166,7 @@ This project is a production-oriented MVP for a controlled pilot. It has not rec
    docker compose -f docker-compose.production.yml --profile migration run --rm migrate
    ```
 
-4. Put a TLS reverse proxy or managed edge in front of the service. Configure request size limits, login/ingest rate limits, and trusted proxy forwarding there. Restrict the service port to localhost/private ingress. Then start one API worker:
+4. Put a TLS reverse proxy or managed edge in front of the service. Configure request size limits, login/ingest rate limits, and trusted proxy forwarding there. Restrict the service port to localhost/private ingress. Set `FORWARDED_ALLOW_IPS` in `.env.production` to the address the API sees the proxy from (never `*`; the API refuses to start with it). Then start one API worker:
 
    ```bash
    docker compose -f docker-compose.production.yml up -d api
@@ -177,6 +190,8 @@ The production compose profile runs as a non-root user, drops Linux capabilities
 - Tenant ownership is checked in application queries and enforced by composite foreign keys across tenant-owned rows.
 - Passwords use Argon2id. Failed logins are rate-limited per hashed client-address/email key in Postgres; the edge proxy must also apply a distributed source-IP limit. Opaque refresh sessions rotate on use and can be revoked at logout; access JWTs expire within 60 minutes.
 - Device credentials are unique, high entropy, hashed at rest, rotated by replacement, and never recoverable from the database.
+- Accounts can be disabled, which signs them out and stops their access at the next request. Admins can end a member's sessions and issue one-use password reset links. Sign-in and password changes are throttled per email or account.
+- Tracker ingest is limited per tracker (`INGEST_LIMIT_PER_MINUTE`, default 120 a minute). Wrong-token attempts count too. The limit is kept in the API process, which is one reason the API runs one worker.
 - WebSocket access uses short-lived one-use tickets; access JWTs are not placed in WebSocket URLs.
 - Tracker fix writes and browser-queued observations are idempotent for duplicate submissions. Out-of-order delayed fixes are retained as positions but must not be treated as reliable real-time fence transitions.
 - API input bounds reject malformed coordinates, speed, heading, timestamps, and oversized notes; standard response hardening headers and a restrictive Content Security Policy are set.
@@ -187,6 +202,7 @@ The production compose profile runs as a non-root user, drops Linux capabilities
 - `GET /api/config` (public UI configuration; reports whether local demo seeding is enabled)
 - `POST /api/auth/login`, `POST /api/auth/refresh`, `POST /api/auth/logout`, `GET /api/me`
 - `POST /api/invites` (admin; creates a one-use 48-hour invite token for secure link delivery), `POST /api/invites/accept`
+- `GET /api/users`, `PATCH /api/users/{id}` (admin: `role`, `disabled`), `POST /api/users/{id}/sessions/revoke` (admin), `POST /api/users/{id}/password-reset` (admin; returns a one-use link token), `POST /api/auth/password-reset/accept`, `POST /api/me/password`
 - `GET /api/assets`, `POST /api/assets` (admin; optional `device_id` provisions a tracker)
 - `POST /api/assets/{id}/device/rotate` (admin)
 - `GET /api/assets/{id}/positions?from=&to=` (last 30 days)
